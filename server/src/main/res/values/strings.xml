@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VeloCast Host</string>
+    <string name="host_subtitle">Rooted low-latency mirroring server</string>
+</resources>

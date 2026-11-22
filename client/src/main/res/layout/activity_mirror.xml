@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mirrorRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Sized dynamically to match the host video aspect ratio with letterboxing -->
+    <SurfaceView
+        android:id="@+id/mirrorSurfaceView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <!-- Adjustable Top Real-Time Stats HUD -->
+    <LinearLayout
+        android:id="@+id/hudContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:gravity="start|center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="32dp">
+
+        <TextView
+            android:id="@+id/hudBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_hud_circle"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:minWidth="40dp"
+            android:minHeight="40dp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="6dp"
+            android:text="--"
+            android:textColor="#F4F4F5"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Decoupled Expandable Frosted-Glass Toolbox Dock (positioned dynamically relative to FAB) -->
+    <LinearLayout
+        android:id="@+id/toolboxDock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_toolbox_dock"
+        android:elevation="12dp"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone" />
+
+    <!-- Decoupled Fixed-Size Circular Glass FAB Toggle (never changes size, cannot jump off-screen) -->
+    <FrameLayout
+        android:id="@+id/fabToggleBtn"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:background="@drawable/bg_fab_toggle"
+        android:clickable="true"
+        android:contentDescription="Toggle Remote Toolbox"
+        android:elevation="14dp"
+        android:focusable="true">
+
+        <ImageView
+            android:id="@+id/fabChevronIcon"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_chevron_up" />
+    </FrameLayout>
+</FrameLayout>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VeloCast</string>
+    <string name="connect_title">VeloCast</string>
+    <string name="connect_subtitle">Low-latency H.264 TCP mirroring</string>
+    <string name="label_host_ip">HOST IP ADDRESS</string>
+    <string name="label_port">TCP PORT</string>
+    <string name="label_bitrate">BITRATE</string>
+    <string name="label_fps">TARGET FPS</string>
+    <string name="action_connect">Connect</string>
+    <string name="settings_title">VeloCast Settings</string>
+    <string name="settings_back">Back</string>
+</resources>

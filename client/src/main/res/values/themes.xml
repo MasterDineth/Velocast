@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.VeloCast" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#3B82F6</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:windowBackground">#080C14</item>
+        <item name="android:statusBarColor">#080C14</item>
+        <item name="android:navigationBarColor">#080C14</item>
+    </style>
+
+    <style name="Theme.VeloCast.Settings" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#4D8EFF</item>
+        <item name="colorOnPrimary">#002E6A</item>
+        <item name="android:windowBackground">#0C1322</item>
+        <item name="android:statusBarColor">#0C1322</item>
+        <item name="android:navigationBarColor">#0C1322</item>
+    </style>
+
+    <style name="Theme.VeloCast.Fullscreen" parent="Theme.VeloCast">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

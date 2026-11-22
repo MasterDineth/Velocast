@@ -1,0 +1,225 @@
+package com.mastersoft.velocast
+
+import android.os.SystemClock
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.BufferedInputStream
+import java.io.DataInputStream
+import java.io.EOFException
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Low-latency Coroutines TCP client with TCP_NODELAY and decoupled network/decoder pipelines.
+ * Network reads run independently of MediaCodec input queuing via a bounded NAL channel so
+ * Wi-Fi packets are drained at wire speed with zero TCP backpressure on the host device.
+ */
+class MirrorClient(
+    private val host: String,
+    private val port: Int,
+    private val bitrateBps: Int,
+    private val fps: Int,
+    private val resolutionScale: Float,
+    private val decoder: VideoDecoder,
+    private val onConnected: () -> Unit,
+    private val onDisconnected: (reason: String) -> Unit,
+    private val onThroughputSample: (bytesPerSec: Long) -> Unit = {},
+    private val onPingMeasured: (rttMs: Int) -> Unit = {}
+) {
+    private data class NalPacket(val ptsUs: Long, val data: ByteArray, val length: Int)
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val outgoingQueue = Channel<ByteArray>(capacity = 256)
+    private val incomingNalQueue = Channel<NalPacket>(capacity = 24)
+    private val explicitlyDisconnected = AtomicBoolean(false)
+
+    private val pingSeq = AtomicInteger(1)
+    private val pendingPings = ConcurrentHashMap<Int, Long>()
+
+    @Volatile
+    private var socket: Socket? = null
+    private var sessionJob: Job? = null
+
+    fun connect() {
+        sessionJob = scope.launch {
+            var tcpSocket: Socket? = null
+            try {
+                var lastErr: Throwable? = null
+                val targetHost = this@MirrorClient.host
+                val targetPort = this@MirrorClient.port
+                val endpoint = InetSocketAddress(targetHost, targetPort)
+
+                for (attempt in 1..3) {
+                    try {
+                        Log.d("MirrorClient", "Connecting to $targetHost:$targetPort (attempt $attempt/3)...")
+                        val s = Socket()
+                        s.tcpNoDelay = true
+                        s.keepAlive = true
+                        s.receiveBufferSize = 512 * 1024
+                        s.sendBufferSize = 64 * 1024
+                        s.connect(endpoint, 5_000)
+                        tcpSocket = s
+                        lastErr = null
+                        break
+                    } catch (t: Throwable) {
+                        lastErr = t
+                        try { tcpSocket?.close() } catch (_: Throwable) {}
+                        tcpSocket = null
+                        if (attempt < 3 && isActive && !explicitlyDisconnected.get()) {
+                            Log.w("MirrorClient", "Attempt $attempt failed (${t.message}), retrying in 300ms...")
+                            delay(300)
+                        }
+                    }
+                }
+                if (lastErr != null) throw lastErr
+
+                val activeSocket = tcpSocket ?: throw IllegalStateException("Socket not connected")
+                socket = activeSocket
+                Log.d("MirrorClient", "Connected to $host:$port")
+                onConnected()
+
+                // Send requested bitrate, FPS, and thermal resolution scale
+                outgoingQueue.trySend(
+                    Protocol.encodeControlPacket(
+                        action = Protocol.ACTION_CONFIG_STREAM,
+                        param = bitrateBps,
+                        normX = fps.toFloat(),
+                        normY = resolutionScale
+                    )
+                )
+
+                val writerJob = launch {
+                    val out = activeSocket.getOutputStream()
+                    for (packet in outgoingQueue) {
+                        out.write(packet)
+                        out.flush()
+                    }
+                }
+
+                val decoderFeederJob = launch(Dispatchers.Default) {
+                    for (nal in incomingNalQueue) {
+                        decoder.feedNalUnit(nal.ptsUs, nal.data, nal.length)
+                    }
+                }
+
+                // 2s heartbeat ping doubles as RTT telemetry + server zombie-client watchdog keepalive
+                val pingJob = launch {
+                    delay(400L)
+                    while (isActive && !activeSocket.isClosed) {
+                        val token = pingSeq.getAndIncrement()
+                        pendingPings[token] = SystemClock.elapsedRealtime()
+                        if (pendingPings.size > 16) {
+                            pendingPings.clear()
+                            pendingPings[token] = SystemClock.elapsedRealtime()
+                        }
+                        outgoingQueue.trySend(
+                            Protocol.encodeControlPacket(Protocol.ACTION_PING, token, 0f, 0f)
+                        )
+                        delay(2_000L)
+                    }
+                }
+
+                try {
+                    readVideoStreamLoop(activeSocket)
+                } finally {
+                    pingJob.cancel()
+                    writerJob.cancel()
+                    incomingNalQueue.close()
+                    decoderFeederJob.cancel()
+                }
+                if (!explicitlyDisconnected.get()) {
+                    onDisconnected("Stream closed by host")
+                }
+            } catch (_: EOFException) {
+                if (!explicitlyDisconnected.get()) {
+                    onDisconnected("Host disconnected")
+                }
+            } catch (t: Throwable) {
+                if (isActive && !explicitlyDisconnected.get()) {
+                    Log.e("MirrorClient", "Connection failed: ${t.message}", t)
+                    onDisconnected(t.message ?: t.javaClass.simpleName)
+                }
+            } finally {
+                try { tcpSocket?.close() } catch (_: Throwable) {}
+                socket = null
+            }
+        }
+    }
+
+    private suspend fun readVideoStreamLoop(tcpSocket: Socket) {
+        val input = DataInputStream(BufferedInputStream(tcpSocket.getInputStream(), 256 * 1024))
+        var bytesInWindow = 0L
+        var windowStartMs = SystemClock.elapsedRealtime()
+
+        while (scope.isActive && !tcpSocket.isClosed) {
+            val ptsUs = input.readLong()
+            val length = input.readInt()
+            if (length <= 0 || length > 16 * 1024 * 1024) {
+                throw IllegalStateException("Invalid NAL payload length: $length")
+            }
+
+            if (ptsUs == Protocol.PTS_PONG && length == 4) {
+                val token = input.readInt()
+                val sentAt = pendingPings.remove(token)
+                if (sentAt != null) {
+                    val rtt = (SystemClock.elapsedRealtime() - sentAt).toInt().coerceAtLeast(1)
+                    onPingMeasured(rtt)
+                }
+                continue
+            }
+
+            val payload = ByteArray(length)
+            input.readFully(payload, 0, length)
+
+            bytesInWindow += (Protocol.VIDEO_HEADER_SIZE + length)
+            val now = SystemClock.elapsedRealtime()
+            val elapsed = now - windowStartMs
+            if (elapsed >= 1000L) {
+                val bps = (bytesInWindow * 1000L) / elapsed
+                onThroughputSample(bps)
+                bytesInWindow = 0L
+                windowStartMs = now
+            }
+
+            incomingNalQueue.send(NalPacket(ptsUs, payload, length))
+        }
+    }
+
+    fun sendTouch(action: Short, pointerId: Int, normX: Float, normY: Float) {
+        outgoingQueue.trySend(Protocol.encodeControlPacket(action, pointerId, normX, normY))
+    }
+
+    fun sendKeyPress(keyCode: Int) {
+        outgoingQueue.trySend(Protocol.encodeControlPacket(Protocol.ACTION_KEY_PRESS, keyCode, 0f, 0f))
+    }
+
+    fun sendExpandNotifications() {
+        outgoingQueue.trySend(Protocol.encodeControlPacket(Protocol.ACTION_EXPAND_NOTIFICATIONS, 0, 0f, 0f))
+    }
+
+    fun sendRotateScreen() {
+        outgoingQueue.trySend(Protocol.encodeControlPacket(Protocol.ACTION_ROTATE_SCREEN, 0, 0f, 0f))
+    }
+
+    fun disconnect() {
+        explicitlyDisconnected.set(true)
+        try { socket?.close() } catch (_: Throwable) {}
+        outgoingQueue.close()
+        incomingNalQueue.close()
+        sessionJob?.cancel()
+        scope.cancel()
+    }
+}

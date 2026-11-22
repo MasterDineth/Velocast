@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Host server rack / broadcast emblem in emerald + electric blue -->
+    <path android:fillColor="#10B981"
+        android:pathData="M30,30 L78,30 C81.3,30 84,32.7 84,36 L84,48 C84,51.3 81.3,54 78,54 L30,54 C26.7,54 24,51.3 24,48 L24,36 C24,32.7 26.7,30 30,30 Z" />
+    <path android:fillColor="#0F172A" android:strokeColor="#34D399" android:strokeWidth="3"
+        android:pathData="M30,58 L78,58 C81.3,58 84,60.7 84,64 L84,74 C84,77.3 81.3,80 78,80 L30,80 C26.7,80 24,77.3 24,74 L24,64 C24,60.7 26.7,58 30,58 Z" />
+    <path android:fillColor="#0B1220" android:pathData="M34,42 A3,3 0 1,1 33.99,42 Z" />
+    <path android:fillColor="#34D399" android:pathData="M34,69 A3,3 0 1,1 33.99,69 Z" />
+</vector>

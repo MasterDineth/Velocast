@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Back mirrored phone frame -->
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M34,26 L62,26 C65.3,26 68,28.7 68,32 L68,70 C68,73.3 65.3,76 62,76 L34,76 C30.7,76 28,73.3 28,70 L28,32 C28,28.7 30.7,26 34,26 Z" />
+    <!-- Front mirrored phone frame -->
+    <path
+        android:fillColor="#0F172A"
+        android:strokeColor="#60A5FA"
+        android:strokeWidth="3.2"
+        android:pathData="M44,34 L72,34 C75.3,34 78,36.7 78,40 L78,76 C78,79.3 75.3,82 72,82 L44,82 C40.7,82 38,79.3 38,76 L38,40 C38,36.7 40.7,34 44,34 Z" />
+    <!-- Signal / low-latency play pulse inside front screen -->
+    <path
+        android:fillColor="#7BD0FF"
+        android:pathData="M54,50 L66,58 L54,66 Z" />
+</vector>
