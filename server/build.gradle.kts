@@ -40,14 +40,3 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
 }
-
-afterEvaluate {
-    tasks.findByName("assembleDebug")?.doLast {
-        val src = file("build/intermediates/apk/debug/server-debug.apk")
-        val dest = file("build/outputs/apk/debug/server-debug.apk")
-        if (src.exists()) {
-            dest.parentFile.mkdirs()
-            src.copyTo(dest, overwrite = true)
-        }
-    }
-}

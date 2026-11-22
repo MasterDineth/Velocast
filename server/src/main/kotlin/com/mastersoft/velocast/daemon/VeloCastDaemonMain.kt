@@ -8,17 +8,19 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * VeloCast Daemon — Headless root server launched via `app_process`.
  *
- * Includes a 10-second socket read watchdog (paired with the client's 2s heartbeat ping)
- * so dropped Wi-Fi sessions immediately release MediaCodec and VirtualDisplay, preventing
- * runaway CPU/thermal load on the host device.
+ * Includes global uncaught exception logging, flushed diagnostics, and a 20-second
+ * heartbeat watchdog so dropped Wi-Fi sessions cleanly release MediaCodec & VirtualDisplay
+ * while keeping the TCP ServerSocket alive for immediate reconnections.
  */
 object VeloCastDaemonMain {
 
-    private const val CLIENT_IDLE_TIMEOUT_MS = 10_000
+    private const val CLIENT_IDLE_TIMEOUT_MS = 20_000
 
     private data class ServerConfig(
         val port: Int = Protocol.DEFAULT_PORT,
@@ -33,6 +35,12 @@ object VeloCastDaemonMain {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            System.err.println("[VeloCastDaemon] UNCAUGHT on ${thread.name}: ${throwable.message}")
+            throwable.printStackTrace(System.err)
+            System.err.flush()
+        }
+
         if (Looper.getMainLooper() == null) {
             @Suppress("DEPRECATION")
             Looper.prepareMainLooper()
@@ -44,8 +52,9 @@ object VeloCastDaemonMain {
         val liveDims = VirtualDisplayBridge.queryDefaultDisplaySize(config.width, config.height)
         println(
             "[VeloCastDaemon] Starting on TCP port ${config.port} " +
-                "(host=${liveDims.width}x${liveDims.height}, default=${config.bitrateBps / 1_000_000} Mbps @ ${config.fps}fps)"
+                "(host=${liveDims.width}x${liveDims.height})"
         )
+        System.out.flush()
 
         val inputInjector = InputInjector(liveDims.width, liveDims.height)
 
@@ -53,12 +62,21 @@ object VeloCastDaemonMain {
             ServerSocket().use { serverSocket ->
                 serverSocket.reuseAddress = true
                 serverSocket.bind(InetSocketAddress("0.0.0.0", config.port), 16)
-                println("[VeloCastDaemon] Listening on 0.0.0.0:${config.port} (idle CPU ~0% until client connects)")
+                println("[VeloCastDaemon] Listening on 0.0.0.0:${config.port}")
+                System.out.flush()
 
                 while (true) {
-                    val clientSocket = serverSocket.accept()
+                    val clientSocket = try {
+                        serverSocket.accept()
+                    } catch (e: Exception) {
+                        if (serverSocket.isClosed) break
+                        System.err.println("[VeloCastDaemon] Accept error: ${e.message}")
+                        Thread.sleep(500L)
+                        continue
+                    }
                     activeSession?.let { old ->
                         println("[VeloCastDaemon] Preempting previous session from ${old.socket.remoteSocketAddress}")
+                        System.out.flush()
                         old.close()
                     }
 
@@ -81,7 +99,8 @@ object VeloCastDaemonMain {
             }
         } catch (t: Throwable) {
             System.err.println("[VeloCastDaemon] Fatal server error on port ${config.port}: ${t.message}")
-            t.printStackTrace()
+            t.printStackTrace(System.err)
+            System.err.flush()
         }
     }
 
@@ -96,21 +115,25 @@ object VeloCastDaemonMain {
         @Volatile
         private var workerThread: Thread? = null
         private val streamWriteLock = Any()
+        private val initialConfigLatch = CountDownLatch(1)
 
         fun start() {
             workerThread = Thread({ runSession() }, "velocast-session-worker").apply { start() }
         }
 
         fun close() {
+            initialConfigLatch.countDown()
             encoder.stop()
             try { socket.close() } catch (_: Throwable) {}
             controlThread?.interrupt()
             workerThread?.interrupt()
+            try { workerThread?.join(1500L) } catch (_: Throwable) {}
         }
 
         private fun runSession() {
             val remoteAddr = socket.remoteSocketAddress
             println("[VeloCastDaemon] Client connected: $remoteAddr")
+            System.out.flush()
 
             socket.tcpNoDelay = true
             socket.keepAlive = true
@@ -122,12 +145,12 @@ object VeloCastDaemonMain {
             inputInjector.displayWidth = dims.width
             inputInjector.displayHeight = dims.height
 
-            // Direct unbuffered OutputStream paired with single coalesced writes in Protocol.writeCoalescedFrame
             val rawOut = socket.getOutputStream()
 
             val ct = Thread({
                 val scratch = ByteArray(Protocol.CONTROL_PACKET_SIZE)
                 val pongBuf = ByteArray(16)
+                var gotInitialConfig = false
                 try {
                     val input = DataInputStream(BufferedInputStream(socket.getInputStream(), 4096))
                     while (!socket.isClosed) {
@@ -137,11 +160,28 @@ object VeloCastDaemonMain {
                                 inputInjector.injectKeyPress(packet.param)
                             }
                             Protocol.ACTION_CONFIG_STREAM -> {
-                                encoder.requestReconfigure(
-                                    newBitrateBps = packet.param,
-                                    newFps = packet.normX.toInt(),
-                                    newScale = packet.normY
-                                )
+                                if (!gotInitialConfig) {
+                                    gotInitialConfig = true
+                                    encoder.applyInitialConfig(
+                                        newBitrateBps = packet.param,
+                                        newFps = packet.normX.toInt(),
+                                        newScale = packet.normY
+                                    )
+                                    initialConfigLatch.countDown()
+                                    if (encoder.isRunning()) {
+                                        encoder.requestReconfigure(
+                                            newBitrateBps = packet.param,
+                                            newFps = packet.normX.toInt(),
+                                            newScale = packet.normY
+                                        )
+                                    }
+                                } else {
+                                    encoder.requestReconfigure(
+                                        newBitrateBps = packet.param,
+                                        newFps = packet.normX.toInt(),
+                                        newScale = packet.normY
+                                    )
+                                }
                             }
                             Protocol.ACTION_EXPAND_NOTIFICATIONS -> {
                                 inputInjector.expandNotificationShade()
@@ -152,6 +192,7 @@ object VeloCastDaemonMain {
                             Protocol.ACTION_PING -> {
                                 synchronized(streamWriteLock) {
                                     Protocol.writePongPacket(rawOut, packet.param, pongBuf)
+                                    rawOut.flush()
                                 }
                             }
                             else -> {
@@ -160,17 +201,20 @@ object VeloCastDaemonMain {
                         }
                     }
                 } catch (_: SocketTimeoutException) {
-                    println("[VeloCastDaemon] Client $remoteAddr timed out (${CLIENT_IDLE_TIMEOUT_MS}ms without heartbeat); releasing encoder")
+                    println("[VeloCastDaemon] Client $remoteAddr timed out (${CLIENT_IDLE_TIMEOUT_MS}ms); releasing encoder")
                 } catch (_: EOFException) {
                     println("[VeloCastDaemon] Client $remoteAddr closed control stream")
                 } catch (t: Throwable) {
                     if (!socket.isClosed) {
                         System.err.println("[VeloCastDaemon] Control reader error: ${t.message}")
+                        System.err.flush()
                     }
                 } finally {
+                    initialConfigLatch.countDown()
                     encoder.stop()
                     try { socket.close() } catch (_: Throwable) {}
                     inputInjector.resetPointers()
+                    System.out.flush()
                 }
             }, "velocast-control-reader")
             ct.isDaemon = true
@@ -178,9 +222,12 @@ object VeloCastDaemonMain {
             controlThread = ct
 
             try {
-                encoder.streamTo(rawOut, streamWriteLock)
+                initialConfigLatch.await(1500L, TimeUnit.MILLISECONDS)
+                if (!socket.isClosed) {
+                    encoder.streamTo(rawOut, streamWriteLock)
+                }
             } catch (t: Throwable) {
-                println("[VeloCastDaemon] Video stream ended for $remoteAddr: ${t.message}")
+                println("[VeloCastDaemon] Video stream ended for $remoteAddr: ${t.javaClass.simpleName}: ${t.message}")
             } finally {
                 encoder.stop()
                 try { socket.close() } catch (_: Throwable) {}
@@ -190,6 +237,7 @@ object VeloCastDaemonMain {
                     activeSession = null
                 }
                 println("[VeloCastDaemon] Session closed & encoder released: $remoteAddr")
+                System.out.flush()
             }
         }
     }

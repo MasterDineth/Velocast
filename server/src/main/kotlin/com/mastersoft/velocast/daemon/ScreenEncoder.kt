@@ -13,11 +13,11 @@ import kotlin.math.roundToInt
 /**
  * Thermal- and latency-optimized hardware H.264/AVC encoder backed by MediaCodec.
  *
- * Key optimizations for older SoCs (e.g. Snapdragon 732G / 120Hz AMOLED):
- * - Caps SurfaceFlinger input cadence via KEY_MAX_FPS_TO_ENCODER (prevents 120Hz oversampling).
- * - Uses VBR bitrate mode and 10s I-frame interval to cut DSP heat on static UI screens.
- * - Sets KEY_REPEAT_PREVIOUS_FRAME_AFTER to 1s (1 FPS idle heartbeat instead of 10 FPS).
- * - Disables B-frames (KEY_MAX_B_FRAMES = 0) and enables KEY_LOW_LATENCY = 1.
+ * Reliability & thermal safeguards:
+ * - Creates a fresh MediaCodec instance on format fallback (never reuses a faulted codec).
+ * - Caps 120Hz AMOLED input rate via KEY_MAX_FPS_TO_ENCODER (with safe fallback).
+ * - Uses 5s I-frame interval + 250ms idle frame repeat so static screens render immediately
+ *   without overheating older SoCs.
  * - Writes header + NAL payload in a single coalesced socket write with zero per-frame allocations.
  */
 class ScreenEncoder(
@@ -30,6 +30,14 @@ class ScreenEncoder(
     private val running = AtomicBoolean(false)
     private val reconfigureRequested = AtomicBoolean(false)
     @Volatile private var activeCodec: MediaCodec? = null
+
+    fun applyInitialConfig(newBitrateBps: Int, newFps: Int, newScale: Float) {
+        bitrateBps = newBitrateBps.coerceIn(1_000_000, 30_000_000)
+        fps = newFps.coerceIn(15, 120)
+        if (newScale > 0.1f) {
+            resolutionScale = newScale.coerceIn(0.5f, 1.0f)
+        }
+    }
 
     fun requestReconfigure(newBitrateBps: Int, newFps: Int, newScale: Float = 0f) {
         val clampedBitrate = newBitrateBps.coerceIn(1_000_000, 30_000_000)
@@ -45,7 +53,6 @@ class ScreenEncoder(
             fps = clampedFps
             resolutionScale = clampedScale
 
-            // Zero-flicker dynamic bitrate update when FPS and resolution are unchanged
             if (!fpsChanged && !scaleChanged && activeCodec != null) {
                 try {
                     val params = Bundle().apply {
@@ -71,6 +78,8 @@ class ScreenEncoder(
         running.set(false)
     }
 
+    fun isRunning(): Boolean = running.get()
+
     fun streamTo(out: OutputStream, writeLock: Any) {
         running.set(true)
 
@@ -85,8 +94,7 @@ class ScreenEncoder(
                 val encodeWidth = alignTo16((deviceDims.width * resolutionScale).roundToInt())
                 val encodeHeight = alignTo16((deviceDims.height * resolutionScale).roundToInt())
 
-                codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                configureEncoderWithFallback(codec, encodeWidth, encodeHeight, bitrateBps, fps)
+                codec = createAndConfigureEncoder(encodeWidth, encodeHeight, bitrateBps, fps)
                 inputSurface = codec.createInputSurface()
 
                 displayBridge.startMirroring(
@@ -101,32 +109,35 @@ class ScreenEncoder(
                 activeCodec = codec
                 println(
                     "[ScreenEncoder] Started H.264 encoder ${encodeWidth}x${encodeHeight} " +
-                        "@ ${fps}fps (maxInputFps=$fps), ${bitrateBps / 1_000_000} Mbps"
+                        "@ ${fps}fps, ${bitrateBps / 1_000_000} Mbps"
                 )
+                System.out.flush()
 
                 drainEncoderLoop(codec, out, writeLock)
             } finally {
                 activeCodec = null
+                // Clean up VirtualDisplay FIRST so SurfaceFlinger disconnects from inputSurface
+                displayBridge.close()
                 try { codec?.stop() } catch (_: Throwable) {}
                 try { codec?.release() } catch (_: Throwable) {}
                 try { inputSurface?.release() } catch (_: Throwable) {}
-                displayBridge.close()
             }
 
             if (!reconfigureRequested.get()) {
                 break
             }
+            // Settle pause before recreating VirtualDisplay on Android 16
+            try { Thread.sleep(200L) } catch (_: InterruptedException) { break }
         }
     }
 
     private fun drainEncoderLoop(codec: MediaCodec, out: OutputStream, writeLock: Any) {
         val bufferInfo = MediaCodec.BufferInfo()
-        // Reusable coalesced frame buffer: [12-byte header][NAL payload]
         var frameBuffer = ByteArray(Protocol.VIDEO_HEADER_SIZE + 256 * 1024)
+        var sentFrames = 0L
 
         while (running.get() && !reconfigureRequested.get()) {
-            // 100ms timeout cuts idle CPU wakeups 5x compared to 20ms while keeping stop/reconfig snappy
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 100_000L)
+            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 50_000L)
             when {
                 outputIndex >= 0 -> {
                     val outputBuffer = codec.getOutputBuffer(outputIndex)
@@ -150,6 +161,13 @@ class ScreenEncoder(
 
                         synchronized(writeLock) {
                             Protocol.writeCoalescedFrame(out, pts, frameBuffer, size)
+                            out.flush()
+                        }
+
+                        sentFrames++
+                        if (sentFrames == 1L || sentFrames == 2L || sentFrames % 300L == 0L) {
+                            println("[ScreenEncoder] Streamed packet #$sentFrames (size=$size, config=$isCodecConfig)")
+                            System.out.flush()
                         }
                     }
                     codec.releaseOutputBuffer(outputIndex, false)
@@ -157,30 +175,40 @@ class ScreenEncoder(
 
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     println("[ScreenEncoder] Output format: ${codec.outputFormat}")
+                    System.out.flush()
                 }
 
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                    // Static screen; encoder is sleeping cleanly.
+                    // Static screen; encoder idle.
                 }
             }
         }
     }
 
-    private fun configureEncoderWithFallback(
-        codec: MediaCodec,
+    /**
+     * Always creates a brand-new MediaCodec instance if optional keys are rejected,
+     * avoiding the Android MediaCodec Error state that causes silent black output.
+     */
+    private fun createAndConfigureEncoder(
         encodeWidth: Int,
         encodeHeight: Int,
         bitrate: Int,
         frameRate: Int
-    ) {
-        val fullFormat = buildVideoFormat(encodeWidth, encodeHeight, bitrate, frameRate, includeOptionalKeys = true)
+    ): MediaCodec {
+        val primary = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         try {
-            codec.configure(fullFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val fullFormat = buildVideoFormat(encodeWidth, encodeHeight, bitrate, frameRate, includeOptionalKeys = true)
+            primary.configure(fullFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            return primary
         } catch (t: Throwable) {
-            System.err.println("[ScreenEncoder] Full format rejected (${t.message}); retrying minimal format")
-            val safeFormat = buildVideoFormat(encodeWidth, encodeHeight, bitrate, frameRate, includeOptionalKeys = false)
-            codec.configure(safeFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            System.err.println("[ScreenEncoder] Optional keys rejected (${t.message}); creating fresh safe encoder")
+            try { primary.release() } catch (_: Throwable) {}
         }
+
+        val fallback = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        val safeFormat = buildVideoFormat(encodeWidth, encodeHeight, bitrate, frameRate, includeOptionalKeys = false)
+        fallback.configure(safeFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        return fallback
     }
 
     private fun buildVideoFormat(
@@ -197,21 +225,14 @@ class ScreenEncoder(
             )
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-            // 10s I-frame interval (matches scrcpy) reduces DSP heat and Wi-Fi burst spikes
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
-            // 1s idle repeat instead of 100ms cuts idle encoding workload by 10x
-            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L)
+            // 250ms idle repeat guarantees static screens appear immediately while staying cool
+            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 250_000L)
 
             if (includeOptionalKeys) {
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    // Crucial on 120Hz displays (e.g. Redmi Note 10 Pro): caps SurfaceFlinger input rate
                     setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, frameRate.toFloat())
-                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     setInteger(MediaFormat.KEY_LOW_LATENCY, 1)

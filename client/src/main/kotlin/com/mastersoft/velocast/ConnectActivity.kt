@@ -5,19 +5,19 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.Spinner
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.AppCompatButton
 
 class ConnectActivity : AppCompatActivity() {
 
     private val bitrateOptions = listOf(
-        "4 Mbps (Cool)" to 4_000_000,
-        "8 Mbps (Balanced)" to 8_000_000,
-        "12 Mbps (High)" to 12_000_000,
+        "4 Mbps" to 4_000_000,
+        "8 Mbps" to 8_000_000,
+        "12 Mbps" to 12_000_000,
         "16 Mbps" to 16_000_000,
         "20 Mbps" to 20_000_000
     )
@@ -39,7 +39,7 @@ class ConnectActivity : AppCompatActivity() {
         val editPort = findViewById<EditText>(R.id.editPort)
         val spinnerBitrate = findViewById<Spinner>(R.id.spinnerBitrate)
         val spinnerFps = findViewById<Spinner>(R.id.spinnerFps)
-        val btnConnect = findViewById<Button>(R.id.btnConnect)
+        val btnConnect = findViewById<AppCompatButton>(R.id.btnConnect)
         val btnOpenSettings = findViewById<ImageButton>(R.id.btnOpenSettings)
 
         editHostIp.setText(prefs.hostIp)

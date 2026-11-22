@@ -184,13 +184,12 @@
         </LinearLayout>
 
         <!-- Electric Blue Gradient Connect CTA -->
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/btnConnect"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:layout_marginTop="34dp"
             android:background="@drawable/bg_connect_cta"
-            android:backgroundTint="@null"
             android:elevation="8dp"
             android:letterSpacing="0.02"
             android:stateListAnimator="@null"

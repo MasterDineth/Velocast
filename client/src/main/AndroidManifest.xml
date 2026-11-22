@@ -31,7 +31,7 @@
         <activity
             android:name=".MirrorActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:exported="false"
+            android:exported="true"
             android:theme="@style/Theme.VeloCast.Fullscreen" />
 
     </application>

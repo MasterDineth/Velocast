@@ -12,7 +12,7 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <!-- Header with Title & Live Status Pill -->
+        <!-- Header with Title, Transition Spinner & Live Status Pill -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -44,6 +44,15 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
+            <ProgressBar
+                android:id="@+id/progressStatus"
+                style="?android:attr/progressBarStyleSmall"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginEnd="8dp"
+                android:indeterminateTint="#F59E0B"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/txtStatusPill"
                 android:layout_width="wrap_content"
@@ -69,7 +78,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:letterSpacing="0.08"
-                android:text="HOST ENDPOINT"
+                android:text="WI-FI HOST ENDPOINT"
                 android:textColor="#94A3B8"
                 android:textSize="11sp"
                 android:textStyle="bold" />
@@ -90,9 +99,9 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:fontFamily="monospace"
-                    android:text="0.0.0.0:27183"
+                    android:text="Detecting Wi-Fi IP..."
                     android:textColor="#7BD0FF"
-                    android:textSize="17sp"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -183,70 +192,13 @@
                 android:textColor="#F1F5F9"
                 android:textSize="15sp" />
 
-            <LinearLayout
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="6dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Default Bitrate"
-                        android:textColor="#CBD5E1"
-                        android:textSize="12sp" />
-
-                    <FrameLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="46dp"
-                        android:layout_marginTop="6dp"
-                        android:background="@drawable/bg_host_inset">
-
-                        <Spinner
-                            android:id="@+id/spinnerHostBitrate"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:backgroundTint="#64748B"
-                            android:popupBackground="#131B2B" />
-                    </FrameLayout>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Default FPS"
-                        android:textColor="#CBD5E1"
-                        android:textSize="12sp" />
-
-                    <FrameLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="46dp"
-                        android:layout_marginTop="6dp"
-                        android:background="@drawable/bg_host_inset">
-
-                        <Spinner
-                            android:id="@+id/spinnerHostFps"
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:backgroundTint="#64748B"
-                            android:popupBackground="#131B2B" />
-                    </FrameLayout>
-                </LinearLayout>
-            </LinearLayout>
+                android:layout_marginTop="10dp"
+                android:text="Bitrate, FPS, and resolution scale are automatically configured by the connected VeloCast client."
+                android:textColor="#94A3B8"
+                android:textSize="12sp" />
 
             <View
                 android:layout_width="match_parent"
@@ -295,13 +247,12 @@
         </LinearLayout>
 
         <!-- Start / Stop Server Primary CTA -->
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/btnToggleServer"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:layout_marginTop="18dp"
             android:background="@drawable/bg_btn_start"
-            android:backgroundTint="@null"
             android:elevation="8dp"
             android:stateListAnimator="@null"
             android:text="Start Server"
@@ -310,7 +261,7 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <!-- Live Daemon Logs Card -->
+        <!-- Live Daemon Logs Card with Copy & Clear -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -337,6 +288,20 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/btnCopyLogs"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="4dp"
+                    android:text="Copy"
+                    android:textColor="#ADC6FF"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
                     android:id="@+id/btnClearLogs"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -350,18 +315,27 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/txtDaemonLogs"
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/logScrollView"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="190dp"
                 android:layout_marginTop="8dp"
                 android:background="@drawable/bg_host_inset"
-                android:fontFamily="monospace"
-                android:minHeight="130dp"
-                android:padding="12dp"
-                android:text="No logs yet. Tap Start Server to begin."
-                android:textColor="#CBD5E1"
-                android:textSize="11sp" />
+                android:fadeScrollbars="false"
+                android:fillViewport="true"
+                android:scrollbars="vertical">
+
+                <TextView
+                    android:id="@+id/txtDaemonLogs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:padding="12dp"
+                    android:text="No logs yet. Tap Start Server to begin."
+                    android:textColor="#CBD5E1"
+                    android:textIsSelectable="true"
+                    android:textSize="11sp" />
+            </androidx.core.widget.NestedScrollView>
         </LinearLayout>
     </LinearLayout>
 </ScrollView>
