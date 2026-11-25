@@ -14,7 +14,13 @@
 | :app-viewer | Application (com.mastersoft.velocast) | Viewer UI: devices, add, connect, mirror, settings, diagnostics, rescue guide. | :client-core, :launcher-adb, :designsystem |
 | :app-host | Application (com.mastersoft.velocast.host) | Old-phone app: Prepare checklist, keep-alive, boot recovery, status, Shizuku and root launch. | :server-core, :launcher-shizuku, :launcher-root, :designsystem |
 
-Rules: :protocol has no Android dependency; launchers depend on :protocol (and cores as listed) only; apps depend on cores, launchers and :designsystem; :server-core has no UI libraries and no app Context.
+Rules:
+- `:protocol` <- `:server-core`, `:client-core`, `:launcher-adb`, `:launcher-shizuku`, `:launcher-root`. `:protocol` is pure Kotlin/JVM and has zero Android plugins or Android dependencies (`com.android.*`, `androidx.*`, `com.google.android.*`).
+- Launchers (`:launcher-adb`, `:launcher-shizuku`, `:launcher-root`) depend on `:protocol` only (until their implementation steps add their listed core dependency) and must **never** depend on `:app-viewer`, `:app-host`, `:designsystem`, or another launcher.
+- `:designsystem` depends on nothing (no project dependencies).
+- Apps depend only on their respective core, launchers, and `:designsystem` (`:app-viewer` -> `:client-core`, `:launcher-adb`, `:designsystem`; `:app-host` -> `:server-core`, `:launcher-shizuku`, `:launcher-root`, `:designsystem`).
+- `:server-core` has no UI libraries (`androidx.appcompat`, `com.google.android.material`, `androidx.compose.*`, `androidx.activity`, `androidx.fragment`) and no app `Context`.
+- Automated enforcement: `./gradlew verifyModuleDependencies` (run automatically by `./gradlew check`) fails the build if any module violates these rules.
 
 ## Launchers (order of preference)
 
