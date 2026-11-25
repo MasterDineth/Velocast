@@ -22,7 +22,7 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":protocol"))
+    api(project(":protocol"))
     implementation(libs.hiddenapibypass)
     testImplementation(libs.junit)
 }
