@@ -94,6 +94,8 @@ class StrictnessTest {
         c(ErrorCode.VALUE_OUT_OF_RANGE, control(touch, param = -1))
         c(ErrorCode.INVALID_COORDINATE, control(touch, x = Float.NaN))
         c(ErrorCode.INVALID_COORDINATE, control(touch, y = Float.POSITIVE_INFINITY))
+        c(ErrorCode.INVALID_COORDINATE, control(touch, x = -0.0f))
+        c(ErrorCode.INVALID_COORDINATE, control(touch, y = -0.0f))
         c(ErrorCode.INVALID_COORDINATE, control(touch, x = 1.0001f))
         c(ErrorCode.INVALID_COORDINATE, control(touch, y = -0.0001f))
         readControl(control(touch, pointer = 31, param = 3, x = 1f, y = 0f))
@@ -251,7 +253,12 @@ class StrictnessTest {
             frame(0x06, length = 12, payload = ByteArray(12)),
             Phase.HANDSHAKE
         )
-        f(ErrorCode.UNEXPECTED_MESSAGE, frame(0x02, length = 40, payload = ByteArray(40)))
+        f(
+            ErrorCode.UNEXPECTED_MESSAGE,
+            frame(0x16, length = 10, payload = ByteArray(10)),
+            Phase.HANDSHAKE
+        )
+        f(ErrorCode.UNEXPECTED_MESSAGE, frame(0x02, length = 22, payload = ByteArray(22)))
         f(
             ErrorCode.MESSAGE_TOO_LARGE,
             frame(0x03, length = 33, payload = ByteArray(33)),
@@ -262,7 +269,14 @@ class StrictnessTest {
             frame(0x03, length = 31, payload = ByteArray(31)),
             Phase.HANDSHAKE
         )
-        f(ErrorCode.MESSAGE_TOO_LARGE, frame(0x02, length = 129), Phase.HANDSHAKE)
+        f(
+            ErrorCode.MALFORMED_MESSAGE,
+            frame(0x02, length = 21, payload = ByteArray(21)),
+            Phase.HANDSHAKE
+        )
+        f(ErrorCode.MESSAGE_TOO_LARGE, frame(0x02, length = 23), Phase.HANDSHAKE)
+        f(ErrorCode.MALFORMED_MESSAGE, frame(0x16, length = 9, payload = ByteArray(9)))
+        f(ErrorCode.MESSAGE_TOO_LARGE, frame(0x16, length = 107))
     }
 
     @Test
@@ -304,5 +318,45 @@ class StrictnessTest {
         expect(ErrorCode.VALUE_OUT_OF_RANGE) { DisplayGeometry(100, 100, 4) }
         expect(ErrorCode.VALUE_OUT_OF_RANGE) { CodecConfig.decode(byteArrayOf(9, 1), 0, 2) }
         expect(ErrorCode.VALUE_OUT_OF_RANGE) { Pong(1, -1) }
+    }
+
+    @Test
+    fun codecConfigRejectsEmptyAndOversizedCsd() {
+        expect(ErrorCode.MALFORMED_MESSAGE) { CodecConfig(Codec.H264, ByteArray(0)) }
+        expect(ErrorCode.MALFORMED_MESSAGE) { CodecConfig.decode(byteArrayOf(1), 0, 1) }
+        expect(ErrorCode.MESSAGE_TOO_LARGE) {
+            CodecConfig(Codec.H264, ByteArray(ProtocolV2.MAX_PAYLOAD))
+        }
+        assertEquals(1, CodecConfig(Codec.H264, byteArrayOf(1)).csd.size)
+    }
+
+    @Test
+    fun payloadWriterRejectsOutOfBoundsStart() {
+        expect(ErrorCode.MALFORMED_MESSAGE) { PayloadWriter(ByteArray(4), -1) }
+        expect(ErrorCode.MALFORMED_MESSAGE) { PayloadWriter(ByteArray(4), 5) }
+        val exactEnd = PayloadWriter(ByteArray(4), 4)
+        assertEquals(0, exactEnd.written)
+        expect(ErrorCode.MESSAGE_TOO_LARGE) { exactEnd.u8(1) }
+    }
+
+    @Test
+    fun deviceInfoRejectsInvalidFields() {
+        val valid = DeviceInfo(35, LaunchMode.SHELL, DisplayGeometry(1080, 2400, 0), "Acme", "X1")
+        val encoded = valid.encode()
+        assertEquals(valid, DeviceInfo.decode(encoded, 0, encoded.size))
+
+        val badLaunch = encoded.copyOf().also { it[2] = 9 }
+        expect(ErrorCode.VALUE_OUT_OF_RANGE) { DeviceInfo.decode(badLaunch, 0, badLaunch.size) }
+        expect(ErrorCode.MALFORMED_MESSAGE) { DeviceInfo.decode(encoded, 0, encoded.size - 1) }
+        expect(ErrorCode.MALFORMED_MESSAGE) { DeviceInfo.decode(encoded + 0, 0, encoded.size + 1) }
+
+        val tooLongName = "a".repeat(ProtocolV2.MAX_NAME_BYTES + 1)
+        val geometry = DisplayGeometry(1080, 2400, 0)
+        expect(ErrorCode.MESSAGE_TOO_LARGE) {
+            DeviceInfo(35, LaunchMode.SHELL, geometry, tooLongName, "X1")
+        }
+        expect(ErrorCode.INVALID_TEXT) {
+            DeviceInfo(35, LaunchMode.SHELL, geometry, "Ac\u0000me", "X1")
+        }
     }
 }

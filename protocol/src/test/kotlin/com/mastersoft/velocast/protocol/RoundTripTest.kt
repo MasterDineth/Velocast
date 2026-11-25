@@ -195,6 +195,7 @@ class RoundTripTest {
         for (block in listOf<() -> Unit>(
             { writer.touch(32, TouchAction.DOWN, 0.5f, 0.5f) },
             { writer.touch(0, TouchAction.DOWN, Float.NaN, 0.5f) },
+            { writer.touch(0, TouchAction.DOWN, -0.0f, 0.5f) },
             { writer.key(5, KeyAction.DOWN) },
             { writer.configStream(500, 60f, 1f) },
             { writer.request(MessageType.PING) }
@@ -207,5 +208,108 @@ class RoundTripTest {
             }
         }
         assertEquals(0, out.size())
+    }
+
+    @Test
+    fun controlWriterAdvancesNextSeqOnlyAfterValidation() {
+        val out = ByteArrayOutputStream()
+        val writer = ControlWriter(out).also {
+            it.phase = Phase.SESSION
+            it.nextSeq = 10
+        }
+        val invalidSessionWrites = listOf<() -> Unit>(
+            { writer.touch(32, TouchAction.DOWN, 0.5f, 0.5f) },
+            { writer.touch(0, TouchAction.DOWN, -0.0f, 0.5f) },
+            { writer.key(5, KeyAction.DOWN) },
+            { writer.configStream(500, 60f, 1f) },
+            { writer.request(MessageType.PING) },
+            { writer.writePayload(Hello(2, 0, ByteArray(ProtocolV2.NONCE_SIZE))) }
+        )
+        for (call in invalidSessionWrites) {
+            try {
+                call()
+                org.junit.Assert.fail("expected ProtocolException")
+            } catch (_: ProtocolException) {
+                // expected
+            }
+            assertEquals(10, writer.nextSeq)
+        }
+        writer.phase = Phase.HANDSHAKE
+        for (call in listOf<() -> Unit>(
+            { writer.ping(1) },
+            { writer.action(DeviceAction.BACK) },
+            { writer.writePayload(TextInput("hi")) }
+        )) {
+            try {
+                call()
+                org.junit.Assert.fail("expected ProtocolException")
+            } catch (_: ProtocolException) {
+                // expected
+            }
+            assertEquals(10, writer.nextSeq)
+        }
+        assertEquals(0, out.size())
+
+        writer.phase = Phase.SESSION
+        writer.ping(0x42)
+        assertEquals(11, writer.nextSeq)
+        writer.writePayload(TextInput("ok"))
+        assertEquals(12, writer.nextSeq)
+
+        val reader = ControlReader(ByteArrayInputStream(out.toByteArray())).also {
+            it.phase = Phase.SESSION
+        }
+        val p = ControlPacket()
+        assertTrue(reader.read(p))
+        assertEquals(10, p.seq)
+        assertTrue(reader.read(p))
+        assertEquals(11, p.seq)
+        assertFalse(reader.read(p))
+    }
+
+    @Test
+    fun frameWriterAdvancesNextSeqOnlyAfterValidation() {
+        val out = ByteArrayOutputStream()
+        val writer = FrameWriter(out).also {
+            it.phase = Phase.HANDSHAKE
+            it.nextSeq = 20
+        }
+        val device = DeviceInfo(35, LaunchMode.SHELL, DisplayGeometry(1080, 2400, 0), "Acme", "X1")
+        for (call in listOf<() -> Unit>(
+            { writer.writeMessage(Pong(1, 2)) },
+            { writer.writeMessage(device) }
+        )) {
+            try {
+                call()
+                org.junit.Assert.fail("expected ProtocolException")
+            } catch (_: ProtocolException) {
+                // expected
+            }
+            assertEquals(20, writer.nextSeq)
+        }
+        writer.phase = Phase.SESSION
+        for (call in listOf<() -> Unit>(
+            { writer.writeMessage(ServerHello(2, 0, ByteArray(ProtocolV2.NONCE_SIZE))) },
+            { writer.writeMessage(Pong(1, 2), FrameFlags.KEYFRAME) }
+        )) {
+            try {
+                call()
+                org.junit.Assert.fail("expected ProtocolException")
+            } catch (_: ProtocolException) {
+                // expected
+            }
+            assertEquals(20, writer.nextSeq)
+        }
+        assertEquals(0, out.size())
+
+        writer.writeMessage(device)
+        assertEquals(21, writer.nextSeq)
+        val reader = FrameReader(ByteArrayInputStream(out.toByteArray())).also {
+            it.phase = Phase.SESSION
+        }
+        val h = FrameHeader()
+        assertTrue(reader.readHeader(h))
+        assertEquals(MessageType.DEVICE_INFO, h.type)
+        assertEquals(20, h.seq)
     }
 }

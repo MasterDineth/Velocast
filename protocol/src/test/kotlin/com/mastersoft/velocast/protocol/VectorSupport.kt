@@ -98,6 +98,7 @@ object VectorSupport {
         MessageType.STATUS -> Status.decode(buf, 0, length)
         MessageType.ERROR -> ErrorMessage.decode(buf, 0, length)
         MessageType.CLIPBOARD -> ClipboardMessage.decode(buf, 0, length)
+        MessageType.DEVICE_INFO -> DeviceInfo.decode(buf, 0, length)
         else -> error("$type has no typed server payload")
     }
 
@@ -136,17 +137,25 @@ object VectorSupport {
             "version=${p.version} " +
                 "features=0x${p.features.toString(16)} nonce=${lowerHex(p.nonce)}"
 
-        is ServerHello -> "version=${p.version} capabilities=0x${p.capabilities.toString(16)} " +
-            "nonce=${lowerHex(p.nonce)} sdk=${p.device.sdkInt} launch=${p.device.launchMode} " +
-            "display=${p.device.display.width}x${p.device.display.height} " +
-            "rotation=${p.device.display.rotation} manufacturer=\"${p.device.manufacturer}\" " +
-            "model=\"${p.device.model}\""
+        is ServerHello ->
+            "version=${p.version} capabilities=0x${p.capabilities.toString(16)} " +
+                "nonce=${lowerHex(p.nonce)}"
 
         is AuthProof -> "proof=${lowerHex(p.proof)}"
 
         is TextInput -> "text=\"${p.text}\""
 
         is ClipboardMessage -> "paste=${p.paste} text=\"${p.text}\""
+
+        else -> describeServerPayload(p)
+    }
+
+    private fun describeServerPayload(p: Payload): String = when (p) {
+        is DeviceInfo ->
+            "sdk=${p.sdkInt} launch=${p.launchMode} " +
+                "display=${p.display.width}x${p.display.height} " +
+                "rotation=${p.display.rotation} manufacturer=\"${p.manufacturer}\" " +
+                "model=\"${p.model}\""
 
         is CodecConfig -> "codec=${p.codec} csd=${lowerHex(p.csd)}"
 

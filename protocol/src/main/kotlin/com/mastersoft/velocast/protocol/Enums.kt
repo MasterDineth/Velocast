@@ -77,7 +77,7 @@ enum class StatusKind(val id: Int) {
     }
 }
 
-/** How the server was started. Part of the device info in SERVER_HELLO. */
+/** How the server was started. Carried in [DeviceInfo] after authentication. */
 enum class LaunchMode(val id: Int) {
     UNKNOWN(LAUNCH_UNKNOWN),
     SHELL(LAUNCH_SHELL),

@@ -77,6 +77,12 @@ class PayloadReader(private val buf: ByteArray, offset: Int, length: Int) {
 class PayloadWriter(private val dest: ByteArray, private val start: Int) {
     private var pos: Int = start
 
+    init {
+        if (start < 0 || start > dest.size) {
+            fail(ErrorCode.MALFORMED_MESSAGE, "writer start outside the buffer")
+        }
+    }
+
     /** Number of bytes written so far. */
     val written: Int get() = pos - start
 

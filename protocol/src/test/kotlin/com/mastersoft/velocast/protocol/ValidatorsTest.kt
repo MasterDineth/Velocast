@@ -31,9 +31,10 @@ class ValidatorsTest {
 
     @Test
     fun coordinates() {
-        val good = floatArrayOf(0f, 1f, 0.5f, Float.MIN_VALUE, Math.nextDown(1f), -0.0f)
+        val good = floatArrayOf(0f, 1f, 0.5f, Float.MIN_VALUE, Math.nextDown(1f))
         for (ok in good) Validators.coordinate(ok)
         val badValues = floatArrayOf(
+            -0.0f,
             Float.NaN,
             Float.POSITIVE_INFINITY,
             Float.NEGATIVE_INFINITY,

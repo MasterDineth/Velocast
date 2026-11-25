@@ -56,14 +56,15 @@ object Gen {
     fun serverHello(rnd: Random) = ServerHello(
         rnd.nextInt(0, 0x10000),
         rnd.nextInt(),
-        rnd.nextBytes(ProtocolV2.NONCE_SIZE),
-        DeviceInfo(
-            rnd.nextInt(0, 0x10000),
-            LaunchMode.entries.random(rnd),
-            geometry(rnd),
-            string(rnd, ProtocolV2.MAX_NAME_BYTES),
-            string(rnd, ProtocolV2.MAX_NAME_BYTES)
-        )
+        rnd.nextBytes(ProtocolV2.NONCE_SIZE)
+    )
+
+    fun deviceInfo(rnd: Random) = DeviceInfo(
+        rnd.nextInt(0, 0x10000),
+        LaunchMode.entries.random(rnd),
+        geometry(rnd),
+        string(rnd, ProtocolV2.MAX_NAME_BYTES),
+        string(rnd, ProtocolV2.MAX_NAME_BYTES)
     )
 
     fun status(rnd: Random): Status {
@@ -91,7 +92,7 @@ object Gen {
         else -> ClipboardMessage(rnd.nextBoolean(), string(rnd, SMALL))
     }
 
-    fun serverPayload(rnd: Random): Payload = when (rnd.nextInt(9)) {
+    fun serverPayload(rnd: Random): Payload = when (rnd.nextInt(10)) {
         0 -> serverHello(rnd)
 
         1 -> AuthProof(rnd.nextBytes(ProtocolV2.PROOF_SIZE))
@@ -114,6 +115,8 @@ object Gen {
             val detail = string(rnd, ProtocolV2.MAX_ERROR_DETAIL_BYTES)
             ErrorMessage(ErrorCode.entries.random(rnd), rnd.nextBoolean(), detail)
         }
+
+        8 -> deviceInfo(rnd)
 
         else -> ClipboardMessage(rnd.nextBoolean(), string(rnd, SMALL))
     }

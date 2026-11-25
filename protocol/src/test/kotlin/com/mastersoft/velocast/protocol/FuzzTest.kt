@@ -67,7 +67,7 @@ class FuzzTest {
         Hello(ProtocolV2.VERSION, rnd.nextInt(), rnd.nextBytes(ProtocolV2.NONCE_SIZE)).encode()
     } else {
         val nonce = rnd.nextBytes(ProtocolV2.NONCE_SIZE)
-        ServerHello(ProtocolV2.VERSION, rnd.nextInt(), nonce, device).encode()
+        ServerHello(ProtocolV2.VERSION, rnd.nextInt(), nonce).encode()
     }
 
     private fun raw(rnd: Random): ByteArray {
@@ -112,6 +112,7 @@ class FuzzTest {
             Hello::decode,
             ServerHello::decode,
             AuthProof::decode,
+            DeviceInfo::decode,
             VideoSize::decode,
             CodecConfig::decode,
             Status::decode,
@@ -138,7 +139,7 @@ class FuzzTest {
         var accepted = false
         var firstError: ProtocolException? = null
         try {
-            val server = ServerHandshake(auth, 0x0F, ByteArray(16) { 1 }, device)
+            val server = ServerHandshake(auth, 0x0F, ByteArray(16) { 1 })
             server.onHello(input, 0, input.size)
             accepted = true
             val proof = rnd.nextBytes(ProtocolV2.PROOF_SIZE)
@@ -204,9 +205,12 @@ private object ControlOracle {
         if (p.seq !in 0..0xFFFF) violate("seq")
     }
 
+    private val negativeZeroBits = (-0.0f).toRawBits()
+
     private fun checkTouch(p: ControlPacket) {
         if (p.pointer !in 0..31 || p.param !in 0..3) violate("touch ids")
-        val validCoords = p.x in 0f..1f && p.y in 0f..1f
+        val validCoords = p.x in 0f..1f && p.y in 0f..1f &&
+            p.x.toRawBits() != negativeZeroBits && p.y.toRawBits() != negativeZeroBits
         if (!validCoords) violate("touch coordinates ${p.x} ${p.y}")
     }
 
@@ -277,12 +281,13 @@ private object FrameOracle {
     private val anyPhaseTypes = setOf(MessageType.BYE, MessageType.ERROR)
 
     fun check(h: FrameHeader, phase: Phase) {
-        checkPhaseAndLength(h, phase)
+        checkPhase(h, phase)
+        checkLength(h, phase)
         checkFlags(h)
         checkTimestamps(h)
     }
 
-    private fun checkPhaseAndLength(h: FrameHeader, phase: Phase) {
+    private fun checkPhase(h: FrameHeader, phase: Phase) {
         val isHandshake = h.type in handshakeTypes
         if (phase == Phase.HANDSHAKE && !isHandshake && h.type !in anyPhaseTypes) {
             violate("session frame ${h.type} in handshake")
@@ -290,9 +295,17 @@ private object FrameOracle {
         if (phase == Phase.SESSION && isHandshake) {
             violate("handshake frame ${h.type} in session")
         }
+    }
+
+    private fun checkLength(h: FrameHeader, phase: Phase) {
         if (phase == Phase.HANDSHAKE && h.length > 256) violate("pre-auth payload ${h.length}")
         if (h.length !in 1..ProtocolV2.MAX_PAYLOAD) violate("length ${h.length}")
-        if (h.type == MessageType.PONG && h.length != 12) violate("pong length")
+        when (h.type) {
+            MessageType.SERVER_HELLO -> if (h.length != 22) violate("server hello length")
+            MessageType.DEVICE_INFO -> if (h.length !in 10..106) violate("device info length")
+            MessageType.PONG -> if (h.length != 12) violate("pong length")
+            else -> Unit
+        }
     }
 
     private fun checkFlags(h: FrameHeader) {

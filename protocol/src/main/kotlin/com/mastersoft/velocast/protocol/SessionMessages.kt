@@ -1,5 +1,53 @@
 package com.mastersoft.velocast.protocol
 
+/**
+ * Server to client (session phase): static facts about the old phone, sent only after
+ * authentication succeeds so unauthenticated peers learn nothing about the device (R10).
+ */
+data class DeviceInfo(
+    val sdkInt: Int,
+    val launchMode: LaunchMode,
+    val display: DisplayGeometry,
+    val manufacturer: String,
+    val model: String
+) : Payload {
+    init {
+        Validators.u16(sdkInt, "sdkInt")
+        TextRules.require(manufacturer, ProtocolV2.MAX_NAME_BYTES, "manufacturer")
+        TextRules.require(model, ProtocolV2.MAX_NAME_BYTES, "model")
+    }
+
+    override val type: MessageType get() = MessageType.DEVICE_INFO
+    override val encodedSize: Int
+        get() = ProtocolV2.DEVICE_INFO_MIN_SIZE +
+            manufacturer.toByteArray(Charsets.UTF_8).size +
+            model.toByteArray(Charsets.UTF_8).size
+
+    override fun encodeTo(dest: ByteArray, offset: Int): Int {
+        val w = PayloadWriter(dest, offset)
+        w.u16(sdkInt)
+        w.u8(launchMode.id)
+        display.writeTo(w)
+        w.string8(manufacturer)
+        w.string8(model)
+        return w.written
+    }
+
+    companion object {
+        fun decode(buf: ByteArray, offset: Int, length: Int): DeviceInfo {
+            val r = PayloadReader(buf, offset, length)
+            val sdkInt = r.u16()
+            val launchMode = LaunchMode.fromId(r.u8())
+                ?: fail(ErrorCode.VALUE_OUT_OF_RANGE, "unknown launch mode")
+            val display = DisplayGeometry.read(r)
+            val manufacturer = r.string8(ProtocolV2.MAX_NAME_BYTES)
+            val model = r.string8(ProtocolV2.MAX_NAME_BYTES)
+            r.expectEnd()
+            return DeviceInfo(sdkInt, launchMode, display, manufacturer, model)
+        }
+    }
+}
+
 /** Server to client: a typed state change. See [StatusKind] for the meaning of [value]. */
 data class Status(val kind: StatusKind, val value: Int, val detail: String = "") : Payload {
     init {

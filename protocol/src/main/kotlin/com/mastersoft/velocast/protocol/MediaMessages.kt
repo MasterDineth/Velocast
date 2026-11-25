@@ -64,10 +64,13 @@ class CodecConfig(val codec: Codec, csd: ByteArray) : Payload {
     val csd: ByteArray = csd.copyOf()
 
     init {
-        if (csd.isEmpty() || csd.size > ProtocolV2.MAX_PAYLOAD - 1) {
+        if (csd.isEmpty()) {
+            fail(ErrorCode.MALFORMED_MESSAGE, "codec config must not be empty")
+        }
+        if (csd.size > ProtocolV2.MAX_PAYLOAD - 1) {
             fail(
                 ErrorCode.MESSAGE_TOO_LARGE,
-                "codec config size outside 1..${ProtocolV2.MAX_PAYLOAD - 1}"
+                "codec config size exceeds ${ProtocolV2.MAX_PAYLOAD - 1}"
             )
         }
     }

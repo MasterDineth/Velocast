@@ -64,57 +64,11 @@ class Hello(val version: Int, val features: Int, nonce: ByteArray) : Payload {
     }
 }
 
-/** Static facts about the old phone, sent in SERVER_HELLO. */
-data class DeviceInfo(
-    val sdkInt: Int,
-    val launchMode: LaunchMode,
-    val display: DisplayGeometry,
-    val manufacturer: String,
-    val model: String
-) {
-    init {
-        Validators.u16(sdkInt, "sdkInt")
-        TextRules.require(manufacturer, ProtocolV2.MAX_NAME_BYTES, "manufacturer")
-        TextRules.require(model, ProtocolV2.MAX_NAME_BYTES, "model")
-    }
-
-    internal val encodedSize: Int
-        get() = ProtocolV2.SERVER_HELLO_FIXED_SIZE - FIXED_BEFORE_DEVICE + 2 +
-            manufacturer.toByteArray(Charsets.UTF_8).size + model.toByteArray(Charsets.UTF_8).size
-
-    internal fun writeTo(w: PayloadWriter) {
-        w.u16(sdkInt)
-        w.u8(launchMode.id)
-        display.writeTo(w)
-        w.string8(manufacturer)
-        w.string8(model)
-    }
-
-    companion object {
-        private const val FIXED_BEFORE_DEVICE = 2 + 4 + ProtocolV2.NONCE_SIZE
-
-        internal fun read(r: PayloadReader): DeviceInfo {
-            val sdkInt = r.u16()
-            val launchMode = LaunchMode.fromId(r.u8())
-                ?: fail(ErrorCode.VALUE_OUT_OF_RANGE, "unknown launch mode")
-            val display = DisplayGeometry.read(r)
-            val manufacturer = r.string8(ProtocolV2.MAX_NAME_BYTES)
-            val model = r.string8(ProtocolV2.MAX_NAME_BYTES)
-            return DeviceInfo(sdkInt, launchMode, display, manufacturer, model)
-        }
-    }
-}
-
 /**
  * Server to client: answers HELLO with the negotiated [version], the server's [capabilities]
- * bitmap, the server nonce and the device info.
+ * bitmap and the server nonce.
  */
-class ServerHello(
-    val version: Int,
-    val capabilities: Int,
-    nonce: ByteArray,
-    val device: DeviceInfo
-) : Payload {
+class ServerHello(val version: Int, val capabilities: Int, nonce: ByteArray) : Payload {
     val nonce: ByteArray = nonce.copyOf()
 
     init {
@@ -123,37 +77,34 @@ class ServerHello(
     }
 
     override val type: MessageType get() = MessageType.SERVER_HELLO
-    override val encodedSize: Int get() = FIXED_BEFORE_DEVICE + device.encodedSize
+    override val encodedSize: Int get() = ProtocolV2.SERVER_HELLO_SIZE
 
     override fun encodeTo(dest: ByteArray, offset: Int): Int {
         val w = PayloadWriter(dest, offset)
         w.u16(version)
         w.i32(capabilities)
         w.bytes(nonce)
-        device.writeTo(w)
         return w.written
     }
 
     override fun equals(other: Any?): Boolean = other is ServerHello && version == other.version &&
-        capabilities == other.capabilities && nonce.contentEquals(other.nonce) &&
-        device == other.device
+        capabilities == other.capabilities && nonce.contentEquals(other.nonce)
 
     override fun hashCode(): Int = 31 * (31 * version + capabilities) + nonce.contentHashCode()
 
     override fun toString(): String =
-        "ServerHello(version=$version, capabilities=$capabilities, device=$device)"
+        "ServerHello(version=$version, capabilities=0x${capabilities.toString(HEX)})"
 
     companion object {
-        private const val FIXED_BEFORE_DEVICE = 2 + 4 + ProtocolV2.NONCE_SIZE
+        private const val HEX = 16
 
         fun decode(buf: ByteArray, offset: Int, length: Int): ServerHello {
             val r = PayloadReader(buf, offset, length)
             val version = r.u16()
             val capabilities = r.i32()
             val nonce = r.bytes(ProtocolV2.NONCE_SIZE)
-            val device = DeviceInfo.read(r)
             r.expectEnd()
-            return ServerHello(version, capabilities, nonce, device)
+            return ServerHello(version, capabilities, nonce)
         }
     }
 }

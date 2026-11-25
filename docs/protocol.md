@@ -34,6 +34,9 @@ PERF-08 (`captureUs`, `PONG.serverUs`).
 | `FRAME_HEADER_SIZE` | 24 | S to C frame header. |
 | `CONTROL_PACKET_SIZE` | 16 | C to S control packet. |
 | `HELLO_SIZE` | 26 | HELLO payload. |
+| `SERVER_HELLO_SIZE` | 22 | SERVER_HELLO payload. |
+| `DEVICE_INFO_MIN_SIZE` | 10 | Smallest DEVICE_INFO payload (empty strings). |
+| `DEVICE_INFO_MAX_SIZE` | 106 | Largest DEVICE_INFO payload (48-byte strings). |
 | `MAX_PAYLOAD` | 4194304 | Largest S to C payload (4 MiB). |
 | `MAX_CONTROL_PAYLOAD` | 262144 | Largest payload after a control packet (256 KiB). |
 | `MAX_HANDSHAKE_PAYLOAD` | 256 | Payload cap in both directions until the handshake is established. |
@@ -117,7 +120,7 @@ Ids are unique across both directions. `c2s` means the client may send it, `s2c`
 | Id | Name | Direction | Phase | Purpose |
 | --- | --- | --- | --- | --- |
 | 0x01 | `HELLO` | c2s | handshake | Opens the handshake: magic, version, wanted features, client nonce. |
-| 0x02 | `SERVER_HELLO` | s2c | handshake | Version, capabilities, server nonce, device info. |
+| 0x02 | `SERVER_HELLO` | s2c | handshake | Version, capabilities, server nonce. |
 | 0x03 | `AUTH_PROOF` | both | handshake | HMAC-SHA256 proof over the transcript, client first, then server. |
 | 0x04 | `BYE` | both | any | Orderly close, optionally with a reason. |
 | 0x05 | `PING` | c2s | session | Liveness and round-trip probe. |
@@ -128,6 +131,7 @@ Ids are unique across both directions. `c2s` means the client may send it, `s2c`
 | 0x13 | `STATUS` | s2c | session | Typed state change. |
 | 0x14 | `ERROR` | s2c | any | Typed failure report. |
 | 0x15 | `CLIPBOARD` | both | session | Clipboard text. |
+| 0x16 | `DEVICE_INFO` | s2c | session | Android API level, launch mode, display geometry, manufacturer and model. |
 | 0x20 | `TOUCH` | c2s | session | One pointer event. |
 | 0x21 | `KEY` | c2s | session | One key event from the allow-list. |
 | 0x22 | `TEXT` | c2s | session | Text to type. |
@@ -189,28 +193,16 @@ Offsets are relative to the start of the payload. "Size" is in bytes.
 | 6 | 4 | `features` | Bitmap of features the client wants (section 6.3). |
 | 10 | 16 | `clientNonce` | Fresh random bytes for this connection. |
 
-### 3.2 SERVER_HELLO (s2c, 32 to 128 bytes)
+### 3.2 SERVER_HELLO (s2c, 22 bytes)
 
 | Offset | Size | Field | Meaning |
 | --- | --- | --- | --- |
 | 0 | 2 | `version` | The negotiated version: the lower of the two sides' versions. |
 | 2 | 4 | `capabilities` | Bitmap of features the server offers. |
 | 6 | 16 | `serverNonce` | Fresh random bytes for this connection. |
-| 22 | 2 | `sdkInt` | Android API level of the device. |
-| 24 | 1 | `launchMode` | How the server runs (table below). |
-| 25 | 2 | `displayWidth` | Physical display width in pixels, 1..16384. |
-| 27 | 2 | `displayHeight` | Physical display height in pixels, 1..16384. |
-| 29 | 1 | `rotation` | Display rotation in quarter turns, 0..3. |
-| 30 | 1+n | `manufacturer` | `str8`, at most 48 bytes. |
-| next | 1+n | `model` | `str8`, at most 48 bytes. |
 
-<!-- begin:launch-modes -->
-| Id | Name | Meaning |
-| --- | --- | --- |
-| 0 | `UNKNOWN` | Not reported. |
-| 1 | `SHELL` | Running as the shell user (uid 2000). |
-| 2 | `ROOT` | Running as root. |
-<!-- end:launch-modes -->
+No device-identifying information is included in `SERVER_HELLO`; the server sends `DEVICE_INFO`
+only after `AUTH_PROOF` verification succeeds (section 3.12, section 6.4).
 
 ### 3.3 AUTH_PROOF (both directions, 32 bytes)
 
@@ -314,11 +306,34 @@ length (1 byte to 256 KiB). Payload layout in both directions:
 | 0 | 1 | `flags` | Bit 0: paste after setting the clipboard (honoured only from the client). Other bits must be zero. |
 | 1 | n | `text` | UTF-8 text, may be empty. |
 
-### 3.12 TEXT (c2s)
+### 3.12 DEVICE_INFO (s2c, 10 to 106 bytes)
+
+Sent in the session phase after authentication succeeds, so unauthenticated peers learn nothing
+about the old phone (R10).
+
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 2 | `sdkInt` | Android API level of the device (`u16`). |
+| 2 | 1 | `launchMode` | How the server runs (table below). |
+| 3 | 2 | `displayWidth` | Physical display width in pixels, 1..16384. |
+| 5 | 2 | `displayHeight` | Physical display height in pixels, 1..16384. |
+| 7 | 1 | `rotation` | Display rotation in quarter turns, 0..3. |
+| 8 | 1+n | `manufacturer` | `str8`, at most 48 bytes. |
+| next | 1+n | `model` | `str8`, at most 48 bytes. |
+
+<!-- begin:launch-modes -->
+| Id | Name | Meaning |
+| --- | --- | --- |
+| 0 | `UNKNOWN` | Not reported. |
+| 1 | `SHELL` | Running as the shell user (uid 2000). |
+| 2 | `ROOT` | Running as root. |
+<!-- end:launch-modes -->
+
+### 3.13 TEXT (c2s)
 
 The payload is the UTF-8 text to type (1 to 4096 bytes); `param` is its length.
 
-### 3.13 CONFIG_STREAM (c2s)
+### 3.14 CONFIG_STREAM (c2s)
 
 `param` is the bitrate in bits per second (1,000,000 to 40,000,000), `x` the frame rate as a
 whole number between 15 and 120, `y` the resolution scale between 0.5 and 1.0. All three are
@@ -461,7 +476,7 @@ sequenceDiagram
     alt magic wrong, version too old, or malformed
         S-->>C: ERROR (BAD_MAGIC / VERSION_MISMATCH) then close
     else accepted
-        S->>C: SERVER_HELLO (version, capabilities, serverNonce, device info)
+        S->>C: SERVER_HELLO (version, capabilities, serverNonce)
     end
     C->>S: AUTH_PROOF (HMAC over client transcript)
     alt proof wrong
@@ -470,7 +485,7 @@ sequenceDiagram
         S->>C: AUTH_PROOF (HMAC over server transcript)
     end
     Note over C,S: Both sides switch to the session phase
-    S->>C: CONFIG, VIDEO_SIZE, VIDEO ...
+    S->>C: DEVICE_INFO, CONFIG, VIDEO_SIZE, VIDEO ...
     C->>S: TOUCH, KEY, PING ...
 ```
 
@@ -510,7 +525,7 @@ The transcript is the concatenation of:
 1. a 17-byte ASCII label: `VLC2 client proof` for the client's proof, `VLC2 server proof` for
    the server's (so a proof cannot be reflected),
 2. the exact 26-byte HELLO payload,
-3. the exact SERVER_HELLO payload.
+3. the exact 22-byte SERVER_HELLO payload.
 
 Both nonces and everything that was offered and negotiated are covered, so tampering with
 HELLO or SERVER_HELLO in transit makes the proofs fail. The worked example in section 9 lists the
@@ -539,11 +554,10 @@ test double built on the JDK's HMAC; the production authenticator is S06).
   it accepts nothing except HELLO, AUTH_PROOF and BYE, and no payload above 256 bytes.
 - A failed attempt must not disturb an active session: the server authenticates a new
   connection before it considers pre-empting the old one (SEC-03).
-- Known exposure to resolve in S03/S06: SERVER_HELLO carries the device info (manufacturer,
-  model, API level, display size) and is sent after any syntactically valid HELLO, i.e. before
-  authentication. Scenario R10 says a hostile peer must receive no data. If that is to hold
-  literally, the server must either redact the device info until the proof verified or move it into
-  a post-auth STATUS-style message. This is recorded as an open question in `PROGRESS.md`.
+- No device data before authentication (R10): `SERVER_HELLO` carries only the negotiated version,
+  server capability bitmap and `serverNonce` (22 bytes). Static device metadata (`sdkInt`,
+  `launchMode`, display geometry, `manufacturer` and `model`) is sent only after `AUTH_PROOF`
+  verification succeeds via `DEVICE_INFO` (`0x16`, `SESSION_ONLY`).
 
 ## 7. Using the library
 
@@ -559,9 +573,9 @@ test double built on the JDK's HMAC; the production authenticator is S06).
   read, and the internal buffer grows only as bytes really arrive, so a peer that announces 4 MiB
   and sends nothing costs a few KiB. Each reader takes a `maxPayload` to cap it further.
 - `Phase` is set by the owner: `reader.phase = Phase.SESSION` after `ESTABLISHED`.
-- Typed payloads (`Hello`, `ServerHello`, `AuthProof`, `VideoSize`, `CodecConfig`, `Status`,
-  `ErrorMessage`, `Pong`, `Bye`, `ClipboardMessage`, `TextInput`) validate on construction, so a
-  decoded object is always valid and always encodes to a legal payload.
+- Typed payloads (`Hello`, `ServerHello`, `AuthProof`, `DeviceInfo`, `VideoSize`, `CodecConfig`,
+  `Status`, `ErrorMessage`, `Pong`, `Bye`, `ClipboardMessage`, `TextInput`) validate on
+  construction, so a decoded object is always valid and always encodes to a legal payload.
 - `PointerStateTracker` and `SeqTracker` are small helpers for the receiving side (section 4, 5).
 
 ## 8. Error codes
@@ -835,6 +849,15 @@ B0 B1 B2 B3 B4 B5 B6 B7 B8 B9 BA BB BC BD BE BF
 = CLIPBOARD flags=none seq=5 pts=0 capture=0 paste=false text="ok"
 ```
 
+<!-- vector device-info s2c session -->
+`device-info` (session phase)
+
+```text
+16 00 00 00 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 23 01 04 38 09 60 00 04 41 63 6D 65 02 58 31
+= DEVICE_INFO flags=none seq=0 pts=0 capture=0 sdk=35 launch=SHELL display=1080x2400 rotation=0 manufacturer="Acme" model="X1"
+```
+
 <!-- vector pong s2c session -->
 `pong` (session phase)
 
@@ -857,11 +880,10 @@ B0 B1 B2 B3 B4 B5 B6 B7 B8 B9 BA BB BC BD BE BF
 `server-hello` (handshake phase)
 
 ```text
-02 00 00 00 00 00 00 26 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+02 00 00 00 00 00 00 16 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 00 02 00 00 00 0F 10 11 12 13 14 15 16 17 18 19
-1A 1B 1C 1D 1E 1F 00 23 01 04 38 09 60 00 04 41
-63 6D 65 02 58 31
-= SERVER_HELLO flags=none seq=0 pts=0 capture=0 version=2 capabilities=0xf nonce=101112131415161718191a1b1c1d1e1f sdk=35 launch=SHELL display=1080x2400 rotation=0 manufacturer="Acme" model="X1"
+1A 1B 1C 1D 1E 1F
+= SERVER_HELLO flags=none seq=0 pts=0 capture=0 version=2 capabilities=0xf nonce=101112131415161718191a1b1c1d1e1f
 ```
 
 <!-- vector auth-proof-server s2c handshake -->
@@ -886,17 +908,16 @@ D0 D1 D2 D3 D4 D5 D6 D7 D8 D9 DA DB DC DD DE DF
 ### 9.3 Handshake with fixed values
 
 Key (32 bytes): `00 01 02 ... 1F`. The client wants features `0x03`, the server offers `0x0F`;
-the nonces are `00..0F` (client) and `10..1F` (server); the device is the one in the
-`server-hello` example above.
+the nonces are `00..0F` (client) and `10..1F` (server).
 
 | Item | Value |
 | --- | --- |
 | HELLO payload | `564c4332000200000003000102030405060708090a0b0c0d0e0f` |
-| SERVER_HELLO payload | `00020000000f101112131415161718191a1b1c1d1e1f00230104380960000441636d65025831` |
+| SERVER_HELLO payload | `00020000000f101112131415161718191a1b1c1d1e1f` |
 | Client transcript | `564c433220636c69656e742070726f6f66` + HELLO payload + SERVER_HELLO payload |
 | Server transcript | `564c4332207365727665722070726f6f66` + HELLO payload + SERVER_HELLO payload |
-| Client proof | `0f94501c99a627e0c0835f7ae1cd74901cbe09dc0cf4f15186aa0ab7d68c4bec` |
-| Server proof | `da5f592f8c3c4caa9cbd4876c3a67b5ba6c5f42afa31e7e3d2e57000e496c3b2` |
+| Client proof | `f629bab91485d9c0ce2e01824b99b569463a4d23b46c178383c11a4747b995af` |
+| Server proof | `4fba50d36619a0aa5dde12c113381b632b7fbe713ea023835145ee8a7f77f17a` |
 | Negotiated | version 2, features `0x03` |
 
 ## 10. Replacing protocol v1
