@@ -21,10 +21,12 @@ import java.util.concurrent.TimeUnit
  */
 object DaemonController {
 
+    private const val TAG = "DaemonController"
     private const val MAIN_CLASS = "com.mastersoft.velocast.server.Main"
     private const val PKG_NAME = "com.mastersoft.velocast.host"
     private const val STATE_DIR = "/data/adb/velocast"
     private const val LOG_FILE = "$STATE_DIR/server.log"
+    private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
     private const val PID_FILE = "$STATE_DIR/server.pid"
     private const val SECRET_FILE = "$STATE_DIR/secret.hex"
     private const val MAGISK_SCRIPT = "/data/adb/service.d/velocast.sh"
@@ -47,7 +49,7 @@ object DaemonController {
                     }
                 }
             } catch (e: IOException) {
-                Log.w("DaemonController", "Error reading su stdout", e)
+                Log.w(TAG, "Error reading su stdout", e)
             }
         }
         readerThread.start()
@@ -61,8 +63,16 @@ object DaemonController {
             readerThread.join(500L)
             ShellResult(proc.exitValue(), out.toString().trim())
         }
-    } catch (t: Throwable) {
-        ShellResult(-1, t.message ?: "su execution failed")
+    } catch (e: IOException) {
+        Log.w(TAG, "su execution failed", e)
+        ShellResult(-1, e.message ?: "su execution failed")
+    } catch (e: SecurityException) {
+        Log.w(TAG, "su execution denied", e)
+        ShellResult(-1, e.message ?: "su execution denied")
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        Log.w(TAG, "su execution interrupted", e)
+        ShellResult(-1, e.message ?: "su execution interrupted")
     }
 
     fun checkRootAccess(): Boolean {
@@ -124,12 +134,14 @@ object DaemonController {
             chmod 700 "$STATE_DIR"
             : > "$LOG_FILE"
             chmod 600 "$LOG_FILE"
+            : > "$PROCESS_LOG_FILE"
+            chmod 600 "$PROCESS_LOG_FILE"
             trap '' HUP
             export CLASSPATH="$apkPath"
             if command -v setsid >/dev/null 2>&1; then
-                setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$LOG_FILE" 2>&1 &
+                setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
             else
-                /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$LOG_FILE" 2>&1 &
+                /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
             fi
             DAEMON_PID=${'$'}!
             echo "${'$'}DAEMON_PID" > "$PID_FILE"
@@ -232,12 +244,19 @@ EOF
     }
 
     fun readRecentLogs(maxLines: Int = 80): String {
-        val res = runSu("if [ -f \"$LOG_FILE\" ]; then tail -n $maxLines \"$LOG_FILE\"; fi")
+        val cmd = """
+            if [ -s "$LOG_FILE" ]; then
+                tail -n $maxLines "$LOG_FILE"
+            elif [ -s "$PROCESS_LOG_FILE" ]; then
+                tail -n $maxLines "$PROCESS_LOG_FILE"
+            fi
+        """.trimIndent()
+        val res = runSu(cmd)
         return res.output.ifBlank { "No logs yet. Tap Start Server to begin." }
     }
 
     fun clearLogs() {
-        runSu(": > \"$LOG_FILE\"")
+        runSu(": > \"$LOG_FILE\" && : > \"$PROCESS_LOG_FILE\"")
     }
 
     fun getLocalWifiIp(context: Context): String {
@@ -307,6 +326,7 @@ private object DaemonScripts {
     private const val PKG_NAME = "com.mastersoft.velocast.host"
     private const val STATE_DIR = "/data/adb/velocast"
     private const val LOG_FILE = "$STATE_DIR/server.log"
+    private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
     private const val PID_FILE = "$STATE_DIR/server.pid"
     private const val SECRET_FILE = "$STATE_DIR/secret.hex"
     private const val SECRET_BYTES = 32
@@ -340,11 +360,14 @@ private object DaemonScripts {
 #!/system/bin/sh
 STATE_DIR="$STATE_DIR"
 LOG_FILE="$LOG_FILE"
+PROCESS_LOG_FILE="$PROCESS_LOG_FILE"
 PID_FILE="$PID_FILE"
 SECRET_FILE="$SECRET_FILE"
 
 mkdir -p "${'$'}STATE_DIR"
 chmod 700 "${'$'}STATE_DIR"
+: > "${'$'}PROCESS_LOG_FILE"
+chmod 600 "${'$'}PROCESS_LOG_FILE"
 
 while [ "${'$'}(getprop sys.boot_completed)" != "1" ]; do
     sleep 2
@@ -360,9 +383,9 @@ fi
 trap '' HUP
 export CLASSPATH="${'$'}APK_PATH"
 if command -v setsid >/dev/null 2>&1; then
-    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}LOG_FILE" 2>&1 &
+    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
 else
-    /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}LOG_FILE" 2>&1 &
+    /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
 fi
 echo "${'$'}!" > "${'$'}PID_FILE"
 chmod 600 "${'$'}PID_FILE"

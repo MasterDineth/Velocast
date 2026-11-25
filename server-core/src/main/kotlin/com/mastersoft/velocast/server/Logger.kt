@@ -65,20 +65,21 @@ class Logger(
     val minLevel: LogLevel = LogLevel.INFO,
     val ringCapacity: Int = DEFAULT_RING_CAPACITY,
     logFile: Path? = null,
-    private val stderr: PrintStream? = defaultStderr(),
+    stderr: PrintStream? = if (logFile == null) defaultStderr() else null,
     private val wallClockMs: () -> Long = System::currentTimeMillis
 ) : Closeable {
     private val lock = Any()
     private val ring = arrayOfNulls<LogEntry>(ringCapacity)
     private var ringHead = 0
     private var ringSize = 0
+    private var activeStderr: PrintStream? = stderr
     private var writer: BufferedWriter? = null
     private var closed = false
 
     init {
         require(ringCapacity > 0) { "ringCapacity must be positive" }
         if (logFile != null) {
-            writer = openLogFile(logFile)
+            writer = tryOpenLogFile(logFile)
         }
     }
 
@@ -110,8 +111,8 @@ class Logger(
         val line = entry.formatLine()
         synchronized(lock) {
             appendRingLocked(entry)
-            stderr?.println(line)
-            stderr?.flush()
+            activeStderr?.println(line)
+            activeStderr?.flush()
             if (!closed) {
                 try {
                     writer?.apply {
@@ -120,7 +121,8 @@ class Logger(
                         flush()
                     }
                 } catch (e: IOException) {
-                    stderr?.println("${wallClockMs()} [ERROR] [Logger] Failed writing log: $e")
+                    val fallback = activeStderr ?: defaultStderr().also { activeStderr = it }
+                    fallback.println("${wallClockMs()} [ERROR] [Logger] Failed writing log: $e")
                 }
             }
         }
@@ -143,7 +145,9 @@ class Logger(
             try {
                 writer?.close()
             } catch (e: IOException) {
-                stderr?.println("${wallClockMs()} [ERROR] [Logger] Failed closing log file: $e")
+                activeStderr?.println(
+                    "${wallClockMs()} [ERROR] [Logger] Failed closing log file: $e"
+                )
             } finally {
                 writer = null
             }
@@ -158,33 +162,22 @@ class Logger(
         }
     }
 
-    private fun openLogFile(logFile: Path): BufferedWriter {
-        val parent = logFile.parent
-        if (parent != null) {
-            Files.createDirectories(parent)
-            applyOwnerOnlyPermissions(parent, POSIX_DIR_PERMS)
+    private fun tryOpenLogFile(logFile: Path): BufferedWriter? = try {
+        openLogFile(logFile) { path, err ->
+            activeStderr?.println("${wallClockMs()} [WARN] [Logger] Could not chmod $path: $err")
         }
-        val opened = Files.newBufferedWriter(
-            logFile,
-            StandardCharsets.UTF_8,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.APPEND,
-            StandardOpenOption.WRITE
-        )
-        applyOwnerOnlyPermissions(logFile, POSIX_FILE_PERMS)
-        return opened
+    } catch (e: IOException) {
+        fallBackToStderr("Failed opening log file $logFile", e)
+        null
+    } catch (e: SecurityException) {
+        fallBackToStderr("Permission denied opening log file $logFile", e)
+        null
     }
 
-    private fun applyOwnerOnlyPermissions(path: Path, perms: String) {
-        val supportsPosix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
-        if (!supportsPosix) return
-        try {
-            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(perms))
-        } catch (e: IOException) {
-            stderr?.println("${wallClockMs()} [WARN] [Logger] Could not chmod $path: $e")
-        } catch (e: SecurityException) {
-            stderr?.println("${wallClockMs()} [WARN] [Logger] Could not chmod $path: $e")
-        }
+    private fun fallBackToStderr(message: String, cause: Throwable) {
+        val fallback = activeStderr ?: defaultStderr().also { activeStderr = it }
+        fallback.println("${wallClockMs()} [WARN] [Logger] $message\n${cause.stackTraceToString()}")
+        fallback.flush()
     }
 
     companion object {
@@ -193,5 +186,42 @@ class Logger(
         private const val POSIX_FILE_PERMS = "rw-------"
 
         private fun defaultStderr(): PrintStream = java.lang.System.err
+
+        private fun openLogFile(
+            logFile: Path,
+            onChmodError: (Path, Exception) -> Unit
+        ): BufferedWriter {
+            val parent = logFile.parent
+            if (parent != null) {
+                Files.createDirectories(parent)
+                applyOwnerOnlyPermissions(parent, POSIX_DIR_PERMS, onChmodError)
+            }
+            val opened = Files.newBufferedWriter(
+                logFile,
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND,
+                StandardOpenOption.WRITE
+            )
+            applyOwnerOnlyPermissions(logFile, POSIX_FILE_PERMS, onChmodError)
+            return opened
+        }
+
+        private fun applyOwnerOnlyPermissions(
+            path: Path,
+            perms: String,
+            onChmodError: (Path, Exception) -> Unit
+        ) {
+            val supportsPosix =
+                FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+            if (!supportsPosix) return
+            try {
+                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(perms))
+            } catch (e: IOException) {
+                onChmodError(path, e)
+            } catch (e: SecurityException) {
+                onChmodError(path, e)
+            }
+        }
     }
 }

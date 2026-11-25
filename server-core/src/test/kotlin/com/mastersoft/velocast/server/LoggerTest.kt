@@ -54,4 +54,38 @@ class LoggerTest {
             tempDir.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun fileLoggerDoesNotDuplicateToSystemErrUnlessOpenFails() {
+        val origErr = System.err
+        val capturedErr = ByteArrayOutputStream()
+        val tempDir = Files.createTempDirectory("velocast-logger-dedup-test")
+        val logPath = tempDir.resolve("server.log")
+        val blockingFile = tempDir.resolve("not-a-dir").also {
+            Files.write(it, byteArrayOf(1))
+        }
+        val failingLogPath = blockingFile.resolve("server.log")
+
+        try {
+            System.setErr(PrintStream(capturedErr))
+            Logger(minLevel = LogLevel.INFO, logFile = logPath).use { logger ->
+                logger.info("Server", "single-copy-line")
+            }
+            val stderrOnOk = capturedErr.toString(Charsets.UTF_8.name())
+            assertFalse(stderrOnOk.contains("single-copy-line"))
+
+            val fileText = String(Files.readAllBytes(logPath), Charsets.UTF_8)
+            assertEquals(1, fileText.lines().count { it.contains("single-copy-line") })
+
+            Logger(minLevel = LogLevel.INFO, logFile = failingLogPath).use { logger ->
+                logger.warn("Server", "fallback-to-stderr")
+            }
+            val stderrOnFail = capturedErr.toString(Charsets.UTF_8.name())
+            assertTrue(stderrOnFail.contains("Failed opening log file"))
+            assertTrue(stderrOnFail.contains("fallback-to-stderr"))
+        } finally {
+            System.setErr(origErr)
+            tempDir.toFile().deleteRecursively()
+        }
+    }
 }
