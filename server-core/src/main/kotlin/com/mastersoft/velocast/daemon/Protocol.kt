@@ -1,4 +1,4 @@
-// TODO(S03): Refactor daemon classes and package structure in S03.
+// TODO(S03): Remove legacy v1 Protocol and switch daemon classes to :protocol (ProtocolV2).
 package com.mastersoft.velocast.daemon
 
 import java.io.DataInputStream

@@ -1,3 +1,4 @@
+// TODO(S04): Remove legacy v1 Protocol and switch viewer transport to :protocol (ProtocolV2).
 package com.mastersoft.velocast
 
 import java.nio.ByteBuffer

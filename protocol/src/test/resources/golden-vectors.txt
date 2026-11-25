@@ -1,0 +1,33 @@
+# Golden vectors for protocol v2, produced by an independent Python encoder
+# (struct/hmac, not the Kotlin code). Format: name | direction | phase | hex | description
+touch-down | c2s | session | 20 00 00 01 00 00 00 00 3F 00 00 00 3E 80 00 00 | TOUCH seq=1 pointer=0 param=0 x=0.5 y=0.25
+touch-move-pointer-1 | c2s | session | 20 01 00 02 00 00 00 02 3F 40 00 00 3F 80 00 00 | TOUCH seq=2 pointer=1 param=2 x=0.75 y=1.0
+touch-up | c2s | session | 20 00 00 03 00 00 00 01 3F 00 00 00 3E 80 00 00 | TOUCH seq=3 pointer=0 param=1 x=0.5 y=0.25
+touch-cancel-pointer-31 | c2s | session | 20 1F 00 04 00 00 00 03 00 00 00 00 00 00 00 00 | TOUCH seq=4 pointer=31 param=3 x=0.0 y=0.0
+key-back-down | c2s | session | 21 00 00 05 00 00 00 04 00 00 00 00 00 00 00 00 | KEY seq=5 pointer=0 param=4 x=0.0 y=0.0
+key-enter-up | c2s | session | 21 01 00 06 00 00 00 42 00 00 00 00 00 00 00 00 | KEY seq=6 pointer=1 param=66 x=0.0 y=0.0
+config-stream | c2s | session | 23 00 00 07 00 7A 12 00 42 70 00 00 3F 40 00 00 | CONFIG_STREAM seq=7 pointer=0 param=8000000 x=60.0 y=0.75
+keyframe-req | c2s | session | 24 00 00 08 00 00 00 00 00 00 00 00 00 00 00 00 | KEYFRAME_REQ seq=8 pointer=0 param=0 x=0.0 y=0.0
+pause | c2s | session | 25 00 00 09 00 00 00 00 00 00 00 00 00 00 00 00 | PAUSE seq=9 pointer=0 param=0 x=0.0 y=0.0
+resume | c2s | session | 26 00 00 0A 00 00 00 00 00 00 00 00 00 00 00 00 | RESUME seq=10 pointer=0 param=0 x=0.0 y=0.0
+action-rotate | c2s | session | 27 00 00 0B 00 00 00 03 00 00 00 00 00 00 00 00 | ACTION seq=11 pointer=0 param=3 x=0.0 y=0.0
+ping | c2s | session | 05 00 00 0C 01 02 03 04 00 00 00 00 00 00 00 00 | PING seq=12 pointer=0 param=16909060 x=0.0 y=0.0
+bye-normal | c2s | session | 04 00 00 0D 00 00 00 00 00 00 00 00 00 00 00 00 | BYE seq=13 pointer=0 param=0 x=0.0 y=0.0
+bye-link-lost | c2s | session | 04 00 00 0E 00 00 00 0B 00 00 00 00 00 00 00 00 | BYE seq=14 pointer=0 param=11 x=0.0 y=0.0
+text-hi | c2s | session | 22 00 00 0F 00 00 00 02 00 00 00 00 00 00 00 00 48 69 | TEXT seq=15 text="Hi"
+clipboard-paste | c2s | session | 15 00 00 10 00 00 00 03 00 00 00 00 00 00 00 00 01 6F 6B | CLIPBOARD seq=16 paste=true text="ok"
+hello | c2s | handshake | 01 00 00 00 00 00 00 1A 00 00 00 00 00 00 00 00 56 4C 43 32 00 02 00 00 00 03 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F | HELLO seq=0 version=2 features=0x3 nonce=000102030405060708090a0b0c0d0e0f
+auth-proof-client | c2s | handshake | 03 00 00 01 00 00 00 20 00 00 00 00 00 00 00 00 A0 A1 A2 A3 A4 A5 A6 A7 A8 A9 AA AB AC AD AE AF B0 B1 B2 B3 B4 B5 B6 B7 B8 B9 BA BB BC BD BE BF | AUTH_PROOF seq=1 proof=a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+video-keyframe | s2c | session | 10 01 00 07 00 00 00 04 00 00 00 00 00 0F 42 40 00 00 00 00 00 0F 3E 58 00 00 00 01 | VIDEO flags=KEYFRAME seq=7 pts=1000000 capture=999000 length=4
+video-delta | s2c | session | 10 00 00 08 00 00 00 03 00 00 00 00 00 0F 83 5B 00 00 00 00 00 0F 7C D8 41 9A 24 | VIDEO flags=none seq=8 pts=1016667 capture=1015000 length=3
+video-reset-keyframe | s2c | session | 10 05 00 09 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 65 88 | VIDEO flags=KEYFRAME|RESET seq=9 pts=0 capture=0 length=2
+config-h264 | s2c | session | 11 02 00 01 00 00 00 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 01 67 | CONFIG flags=CONFIG seq=1 pts=0 capture=0 codec=H264 csd=0000000167
+video-size | s2c | session | 12 04 00 02 00 00 00 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02 1C 04 B0 04 38 09 60 00 | VIDEO_SIZE flags=RESET seq=2 pts=0 capture=0 stream=540x1200 display=1080x2400 rotation=0
+status-display-off | s2c | session | 13 00 00 03 00 00 00 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 | STATUS flags=none seq=3 pts=0 capture=0 kind=DISPLAY_POWER value=0 detail=""
+error-locked | s2c | session | 14 08 00 04 00 00 00 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 09 00 03 50 49 4E | ERROR flags=ERROR seq=4 pts=0 capture=0 code=LOCKED fatal=false detail="PIN"
+clipboard-server | s2c | session | 15 00 00 05 00 00 00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 6F 6B | CLIPBOARD flags=none seq=5 pts=0 capture=0 paste=false text="ok"
+pong | s2c | session | 06 00 00 06 00 00 00 0C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 02 03 04 00 00 00 00 00 0F 42 40 | PONG flags=none seq=6 pts=0 capture=0 token=16909060 serverUs=1000000
+bye-server | s2c | session | 04 00 00 07 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 | BYE flags=none seq=7 pts=0 capture=0 code=none
+server-hello | s2c | handshake | 02 00 00 00 00 00 00 26 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02 00 00 00 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 00 23 01 04 38 09 60 00 04 41 63 6D 65 02 58 31 | SERVER_HELLO flags=none seq=0 pts=0 capture=0 version=2 capabilities=0xf nonce=101112131415161718191a1b1c1d1e1f sdk=35 launch=SHELL display=1080x2400 rotation=0 manufacturer="Acme" model="X1"
+auth-proof-server | s2c | handshake | 03 00 00 01 00 00 00 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 C0 C1 C2 C3 C4 C5 C6 C7 C8 C9 CA CB CC CD CE CF D0 D1 D2 D3 D4 D5 D6 D7 D8 D9 DA DB DC DD DE DF | AUTH_PROOF flags=none seq=1 pts=0 capture=0 proof=c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf
+error-version-mismatch | s2c | handshake | 14 08 00 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0A 01 00 | ERROR flags=ERROR seq=0 pts=0 capture=0 code=VERSION_MISMATCH fatal=true detail=""
