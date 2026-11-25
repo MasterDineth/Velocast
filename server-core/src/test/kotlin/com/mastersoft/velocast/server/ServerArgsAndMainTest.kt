@@ -10,6 +10,8 @@ import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.Pong
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.protocol.Status
+import com.mastersoft.velocast.protocol.StatusKind
 import com.mastersoft.velocast.protocol.Transcript
 import java.io.ByteArrayOutputStream
 import java.io.PipedInputStream
@@ -203,12 +205,26 @@ class ServerArgsAndMainTest {
             fr.readPayload(h)
             assertEquals(expectedDeviceInfo, DeviceInfo.decode(fr.payload, 0, h.length))
 
+            assertTrue(fr.readHeader(h))
+            assertEquals(MessageType.STATUS, h.type)
+            fr.readPayload(h)
+            val capStatus = Status.decode(fr.payload, 0, h.length)
+            assertEquals(StatusKind.DISPLAY_POWER, capStatus.kind)
+            assertTrue(capStatus.detail.contains("rotation_watcher="))
+
             cw.ping(99)
             clientSocket.getOutputStream().flush()
-            assertTrue(fr.readHeader(h))
-            assertEquals(MessageType.PONG, h.type)
-            fr.readPayload(h)
-            val pong = Pong.decode(fr.payload, 0, h.length)
+            var pong: Pong? = null
+            while (pong == null) {
+                assertTrue(fr.readHeader(h))
+                fr.readPayload(h)
+                if (h.type == MessageType.STATUS) {
+                    assertEquals(StatusKind.DEGRADED, Status.decode(fr.payload, 0, h.length).kind)
+                } else {
+                    assertEquals(MessageType.PONG, h.type)
+                    pong = Pong.decode(fr.payload, 0, h.length)
+                }
+            }
             assertEquals(99, pong.token)
             assertTrue(pong.serverUs >= 0L)
 

@@ -13,6 +13,12 @@ import com.mastersoft.velocast.protocol.LaunchMode
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.protocol.Status
+import com.mastersoft.velocast.protocol.StatusKind
+import com.mastersoft.velocast.server.platform.DeviceStateController
+import com.mastersoft.velocast.server.platform.SavedDeviceState
+import com.mastersoft.velocast.server.platform.ServerCapabilities
+import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -359,6 +365,12 @@ class FakeSessionEnvironment(
     val sink = FakeInjectorSink()
     val createdPipelines = CopyOnWriteArrayList<FakeMediaPipeline>()
     val createdInjectors = CopyOnWriteArrayList<InputInjector>()
+    val createdControllers = CopyOnWriteArrayList<FakeDeviceStateController>()
+    val createdGuardians = CopyOnWriteArrayList<FakeCleanUpGuardian>()
+    var initialDisplayPowerOn: Boolean = true
+    var displayPowerSupported: Boolean = false
+    var rotationWatcherSupported: Boolean = false
+    var simulatedRotationCallback: (() -> Unit)? = null
 
     val sampleDeviceInfo = DeviceInfo(
         sdkInt = 35,
@@ -382,12 +394,80 @@ class FakeSessionEnvironment(
 
     override fun createMediaPipeline(
         display: DisplayGeometry,
-        sink: SessionFrameSink
+        sink: SessionFrameSink,
+        onGeometryChanged: (DisplayGeometry) -> Unit
     ): MediaPipeline {
         pipelineCreations.incrementAndGet()
         return FakeMediaPipeline(concurrentPipelines, maxConcurrentPipelines).also {
             createdPipelines.add(it)
         }
+    }
+
+    override fun createStateController(): DeviceStateController = FakeDeviceStateController(
+        initialState = SavedDeviceState(
+            accelerometerRotation = 1,
+            userRotation = 0,
+            displayPowerOn = initialDisplayPowerOn
+        ),
+        displayPowerSupported = displayPowerSupported
+    ).also { createdControllers.add(it) }
+
+    override fun startCleanUpGuardian(
+        state: SavedDeviceState,
+        restoreDisplayPower: Boolean
+    ): CleanUpGuardian = FakeCleanUpGuardian(state, restoreDisplayPower).also {
+        createdGuardians.add(it)
+    }
+
+    override fun registerRotationWatcher(onRotationChanged: () -> Unit): Closeable? {
+        if (!rotationWatcherSupported) return null
+        simulatedRotationCallback = onRotationChanged
+        return Closeable { simulatedRotationCallback = null }
+    }
+
+    override fun probeCapabilities(
+        injector: InputInjector,
+        hasRotationWatcher: Boolean
+    ): ServerCapabilities = ServerCapabilities(
+        rotationWatcher = hasRotationWatcher,
+        displayPowerControl = displayPowerSupported,
+        notificationShade = injector.hasNotificationShade,
+        wake = injector.hasWakeKeyInjection
+    )
+}
+
+class FakeDeviceStateController(
+    val initialState: SavedDeviceState,
+    override val displayPowerSupported: Boolean
+) : DeviceStateController {
+    val restoredStates = CopyOnWriteArrayList<SavedDeviceState>()
+    val powerChanges = CopyOnWriteArrayList<Boolean>()
+    var allowSetPower: Boolean = true
+
+    override fun captureState(): SavedDeviceState = initialState
+
+    override fun restoreState(state: SavedDeviceState) {
+        restoredStates.add(state)
+    }
+
+    override fun setDisplayPowerOn(on: Boolean): Boolean {
+        if (!displayPowerSupported || !allowSetPower) return false
+        powerChanges.add(on)
+        return true
+    }
+}
+
+class FakeCleanUpGuardian(val recordedState: SavedDeviceState, val restoreDisplayPower: Boolean) :
+    CleanUpGuardian {
+    val disarmed = AtomicBoolean(false)
+    val closed = AtomicBoolean(false)
+
+    override fun disarm() {
+        disarmed.set(true)
+    }
+
+    override fun close() {
+        closed.set(true)
     }
 }
 
@@ -429,7 +509,32 @@ internal object TestClientDriver {
         check(fr.readHeader(h)) { "Expected DEVICE_INFO" }
         fr.readPayload(h)
         check(h.type == MessageType.DEVICE_INFO) { "Expected DEVICE_INFO, got ${h.type}" }
+
+        drainInitialStatuses(fr, h)
         return Pair(cw, fr)
+    }
+
+    fun drainInitialStatuses(fr: FrameReader, h: FrameHeader = FrameHeader()) {
+        check(fr.readHeader(h)) { "Expected capability STATUS" }
+        fr.readPayload(h)
+        check(h.type == MessageType.STATUS) { "Expected STATUS, got ${h.type}" }
+        val initialStatus = Status.decode(fr.payload, 0, h.length)
+        check(initialStatus.kind == StatusKind.DISPLAY_POWER) {
+            "Expected initial DISPLAY_POWER status, got ${initialStatus.kind}"
+        }
+        val detail = initialStatus.detail
+        if (detail.contains("rotation_watcher=0")) drainDegraded(fr, h)
+        if (detail.contains("display_power=0")) drainDegraded(fr, h)
+        if (detail.contains("notification_shade=0")) drainDegraded(fr, h)
+        if (detail.contains("wake=0")) drainDegraded(fr, h)
+    }
+
+    private fun drainDegraded(fr: FrameReader, h: FrameHeader) {
+        check(fr.readHeader(h)) { "Expected DEGRADED STATUS" }
+        fr.readPayload(h)
+        check(h.type == MessageType.STATUS) { "Expected STATUS, got ${h.type}" }
+        val st = Status.decode(fr.payload, 0, h.length)
+        check(st.kind == StatusKind.DEGRADED) { "Expected DEGRADED, got ${st.kind}" }
     }
 
     fun expectFatalError(fr: FrameReader): ErrorCode {

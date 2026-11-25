@@ -9,6 +9,7 @@ android {
 
     defaultConfig {
         minSdk = 30
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -25,4 +26,7 @@ dependencies {
     api(project(":protocol"))
     implementation(libs.hiddenapibypass)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
