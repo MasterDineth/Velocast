@@ -7,12 +7,14 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.server.InjectionDeniedException
 import com.mastersoft.velocast.server.InjectorSink
 import com.mastersoft.velocast.server.Logger
 import com.mastersoft.velocast.server.UnsupportedPlatformException
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.concurrent.TimeUnit
 
@@ -24,6 +26,11 @@ class BinderInjectorSink(private val logger: Logger) : InjectorSink {
     private val inputManager: Pair<Any, Method> = BinderResolvers.resolveInputManager(logger)
     private val statusBar: StatusBarHandles? = BinderResolvers.resolveStatusBarService(logger)
     private val windowManager: Any? = BinderResolvers.resolveWindowManagerService(logger)
+
+    override val hasNotificationShade: Boolean
+        get() = statusBar != null
+
+    override val hasWakeKeyInjection: Boolean = true
 
     private val pointerProps = Array(MAX_SLOTS) { MotionEvent.PointerProperties() }
     private val pointerCoords = Array(MAX_SLOTS) { MotionEvent.PointerCoords() }
@@ -126,17 +133,36 @@ class BinderInjectorSink(private val logger: Logger) : InjectorSink {
 
     private fun injectEvent(event: InputEvent) {
         try {
-            inputManager.second.invoke(
+            val result = inputManager.second.invoke(
                 inputManager.first,
                 event,
                 INJECT_INPUT_EVENT_MODE_ASYNC
             )
+            if (result as? Boolean == false) {
+                throw InjectionDeniedException("InputManager.injectInputEvent returned false")
+            }
+        } catch (e: InvocationTargetException) {
+            val target = e.targetException
+            if (target is SecurityException) {
+                logger.warn(TAG, "injectInputEvent denied", e)
+                throw InjectionDeniedException(
+                    target.message ?: "Input injection denied by platform",
+                    e
+                )
+            }
+            logger.warn(TAG, "injectInputEvent invocation failed", target ?: e)
         } catch (e: ReflectiveOperationException) {
             logger.warn(TAG, "injectInputEvent failed", e)
         } catch (e: SecurityException) {
             logger.warn(TAG, "injectInputEvent denied", e)
+            throwDenied(e)
         }
     }
+
+    private fun throwDenied(cause: SecurityException): Nothing = throw InjectionDeniedException(
+        cause.message ?: "Input injection denied by platform",
+        cause
+    )
 
     private companion object {
         const val TAG = "BinderInjectorSink"

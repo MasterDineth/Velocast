@@ -41,7 +41,12 @@ object Main {
         }
 
         val clock = AndroidServerClock()
-        val environment = AndroidSessionEnvironment(clock, logger)
+        val environment = AndroidSessionEnvironment(
+            clock = clock,
+            logger = logger,
+            stateDir = parsedArgs.stateDir,
+            bitrateMode = parsedArgs.bitrateMode
+        )
         val runner = ServerRunner(
             args = parsedArgs,
             authenticator = authenticator,

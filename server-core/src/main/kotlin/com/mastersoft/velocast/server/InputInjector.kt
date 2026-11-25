@@ -11,10 +11,23 @@ import com.mastersoft.velocast.protocol.TouchAction
 import com.mastersoft.velocast.protocol.Validators
 
 /**
+ * Thrown when the platform refuses an input injection request (for example Xiaomi
+ * "USB debugging (Security settings)" is disabled). Reported to the viewer as `INJECTION_DENIED`.
+ */
+class InjectionDeniedException(message: String, cause: Throwable? = null) :
+    RuntimeException(message, cause)
+
+/**
  * Target sink for translated touch, key, and device actions. Isolated from Android framework
  * constructors so [InputInjector] is testable on the JVM without Android instrumentation.
  */
 interface InjectorSink {
+    val hasNotificationShade: Boolean
+        get() = true
+
+    val hasWakeKeyInjection: Boolean
+        get() = true
+
     fun injectTouch(
         downTimeMs: Long,
         eventTimeMs: Long,
@@ -67,6 +80,12 @@ class InputInjector(
 
     val activePointerCount: Int
         get() = synchronized(lock) { activeCount }
+
+    val hasNotificationShade: Boolean
+        get() = sink.hasNotificationShade
+
+    val hasWakeKeyInjection: Boolean
+        get() = sink.hasWakeKeyInjection
 
     fun isPointerDown(pointerId: Int): Boolean = synchronized(lock) {
         Validators.pointerId(pointerId)
@@ -219,50 +238,59 @@ class InputInjector(
         slotX[index] = px
         slotY[index] = py
         if (activeCount == 1) {
-            sink.injectTouch(
-                downTimeMs = downTimeMs,
-                eventTimeMs = now,
-                action = MotionEvent.ACTION_UP,
-                pointerCount = 1,
-                pointerIds = slotIds,
-                xCoords = slotX,
-                yCoords = slotY
-            )
-            activeCount = 0
+            try {
+                sink.injectTouch(
+                    downTimeMs = downTimeMs,
+                    eventTimeMs = now,
+                    action = MotionEvent.ACTION_UP,
+                    pointerCount = 1,
+                    pointerIds = slotIds,
+                    xCoords = slotX,
+                    yCoords = slotY
+                )
+            } finally {
+                activeCount = 0
+            }
         } else {
             val action = MotionEvent.ACTION_POINTER_UP or
                 (index shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-            sink.injectTouch(
-                downTimeMs = downTimeMs,
-                eventTimeMs = now,
-                action = action,
-                pointerCount = activeCount,
-                pointerIds = slotIds,
-                xCoords = slotX,
-                yCoords = slotY
-            )
-            val tail = activeCount - 1 - index
-            if (tail > 0) {
-                System.arraycopy(slotIds, index + 1, slotIds, index, tail)
-                System.arraycopy(slotX, index + 1, slotX, index, tail)
-                System.arraycopy(slotY, index + 1, slotY, index, tail)
+            try {
+                sink.injectTouch(
+                    downTimeMs = downTimeMs,
+                    eventTimeMs = now,
+                    action = action,
+                    pointerCount = activeCount,
+                    pointerIds = slotIds,
+                    xCoords = slotX,
+                    yCoords = slotY
+                )
+            } finally {
+                val tail = activeCount - 1 - index
+                if (tail > 0) {
+                    System.arraycopy(slotIds, index + 1, slotIds, index, tail)
+                    System.arraycopy(slotX, index + 1, slotX, index, tail)
+                    System.arraycopy(slotY, index + 1, slotY, index, tail)
+                }
+                activeCount--
             }
-            activeCount--
         }
     }
 
     private fun cancelAllLocked(now: Long) {
         if (activeCount > 0) {
-            sink.injectTouch(
-                downTimeMs = downTimeMs,
-                eventTimeMs = now,
-                action = MotionEvent.ACTION_CANCEL,
-                pointerCount = activeCount,
-                pointerIds = slotIds,
-                xCoords = slotX,
-                yCoords = slotY
-            )
-            activeCount = 0
+            try {
+                sink.injectTouch(
+                    downTimeMs = downTimeMs,
+                    eventTimeMs = now,
+                    action = MotionEvent.ACTION_CANCEL,
+                    pointerCount = activeCount,
+                    pointerIds = slotIds,
+                    xCoords = slotX,
+                    yCoords = slotY
+                )
+            } finally {
+                activeCount = 0
+            }
         }
     }
 
