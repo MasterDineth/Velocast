@@ -12,6 +12,7 @@ private const val ID_VIDEO_SIZE = 0x12
 private const val ID_STATUS = 0x13
 private const val ID_ERROR = 0x14
 private const val ID_CLIPBOARD = 0x15
+private const val ID_DEVICE_INFO = 0x16
 private const val ID_TOUCH = 0x20
 private const val ID_KEY = 0x21
 private const val ID_TEXT = 0x22
@@ -67,7 +68,7 @@ enum class MessageType(
     SERVER_HELLO(
         ID_SERVER_HELLO,
         null,
-        PayloadSpec(ProtocolV2.SERVER_HELLO_MIN_SIZE, ProtocolV2.SERVER_HELLO_MAX_SIZE),
+        PayloadSpec.exactly(ProtocolV2.SERVER_HELLO_SIZE),
         PhaseRule.HANDSHAKE_ONLY
     ),
     AUTH_PROOF(
@@ -108,6 +109,12 @@ enum class MessageType(
         ID_CLIPBOARD,
         PayloadSpec(ProtocolV2.CLIPBOARD_MIN_SIZE, ProtocolV2.MAX_CLIPBOARD_BYTES),
         PayloadSpec(ProtocolV2.CLIPBOARD_MIN_SIZE, ProtocolV2.MAX_CLIPBOARD_BYTES),
+        PhaseRule.SESSION_ONLY
+    ),
+    DEVICE_INFO(
+        ID_DEVICE_INFO,
+        null,
+        PayloadSpec(ProtocolV2.DEVICE_INFO_MIN_SIZE, ProtocolV2.DEVICE_INFO_MAX_SIZE),
         PhaseRule.SESSION_ONLY
     ),
     TOUCH(ID_TOUCH, PayloadSpec.NONE, null, PhaseRule.SESSION_ONLY),

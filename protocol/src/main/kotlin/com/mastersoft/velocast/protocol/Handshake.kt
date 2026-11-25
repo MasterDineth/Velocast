@@ -125,8 +125,7 @@ class ClientHandshake(
 class ServerHandshake(
     private val authenticator: Authenticator,
     private val capabilities: Int,
-    serverNonce: ByteArray,
-    private val device: DeviceInfo
+    serverNonce: ByteArray
 ) : HandshakeBase(HandshakeState.AWAIT_HELLO) {
     private val nonce: ByteArray = serverNonce.copyOf()
     private var helloPayload: ByteArray = ByteArray(0)
@@ -144,7 +143,7 @@ class ServerHandshake(
                 fail(ErrorCode.VERSION_MISMATCH, "client version ${hello.version} is too old")
             }
             val version = minOf(hello.version, ProtocolV2.VERSION)
-            val reply = ServerHello(version, capabilities, nonce, device)
+            val reply = ServerHello(version, capabilities, nonce)
             helloPayload = payload.copyOfRange(offset, offset + length)
             serverHelloPayload = reply.encode()
             clientHello = hello

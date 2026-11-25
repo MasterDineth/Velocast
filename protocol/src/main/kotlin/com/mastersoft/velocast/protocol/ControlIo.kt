@@ -123,28 +123,23 @@ class ControlWriter(private val out: OutputStream) {
     private val packet = ControlPacket()
 
     fun touch(pointer: Int, action: TouchAction, x: Float, y: Float) {
-        prepare(MessageType.TOUCH, pointer, action.id, x, y)
-        write(packet)
+        writePacket(MessageType.TOUCH, pointer, action.id, x, y)
     }
 
     fun key(code: Int, action: KeyAction) {
-        prepare(MessageType.KEY, action.id, code, 0f, 0f)
-        write(packet)
+        writePacket(MessageType.KEY, action.id, code, 0f, 0f)
     }
 
     fun configStream(bitrateBps: Int, fps: Float, scale: Float) {
-        prepare(MessageType.CONFIG_STREAM, 0, bitrateBps, fps, scale)
-        write(packet)
+        writePacket(MessageType.CONFIG_STREAM, 0, bitrateBps, fps, scale)
     }
 
     fun action(action: DeviceAction) {
-        prepare(MessageType.ACTION, 0, action.id, 0f, 0f)
-        write(packet)
+        writePacket(MessageType.ACTION, 0, action.id, 0f, 0f)
     }
 
     fun ping(token: Int) {
-        prepare(MessageType.PING, 0, token, 0f, 0f)
-        write(packet)
+        writePacket(MessageType.PING, 0, token, 0f, 0f)
     }
 
     /** Sends one of the parameterless requests KEYFRAME_REQ, PAUSE or RESUME. */
@@ -153,13 +148,11 @@ class ControlWriter(private val out: OutputStream) {
             type == MessageType.KEYFRAME_REQ || type == MessageType.PAUSE ||
                 type == MessageType.RESUME
         if (!allowed) fail(ErrorCode.UNEXPECTED_MESSAGE, "$type is not a parameterless request")
-        prepare(type, 0, 0, 0f, 0f)
-        write(packet)
+        writePacket(type, 0, 0, 0f, 0f)
     }
 
     fun bye(code: ErrorCode? = null) {
-        prepare(MessageType.BYE, 0, code?.id ?: 0, 0f, 0f)
-        write(packet)
+        writePacket(MessageType.BYE, 0, code?.id ?: 0, 0f, 0f)
     }
 
     /** Validates and writes a packet that has no payload, using the packet's own `seq`. */
@@ -175,7 +168,7 @@ class ControlWriter(private val out: OutputStream) {
             )
         }
         ControlRules.validate(p)
-        encodeHeader(p, buffer)
+        encodeHeader(p.type.id, p.pointer, p.seq, p.param, p.x, p.y, buffer)
         out.write(buffer, 0, ProtocolV2.CONTROL_PACKET_SIZE)
     }
 
@@ -190,35 +183,43 @@ class ControlWriter(private val out: OutputStream) {
         if (spec.isEmpty || size < spec.min || size > limit) {
             fail(ErrorCode.MALFORMED_MESSAGE, "${msg.type} payload size $size not allowed")
         }
-        prepare(msg.type, 0, size, 0f, 0f)
-        ControlRules.validate(packet)
         val frame = if (ProtocolV2.CONTROL_PACKET_SIZE + size <= buffer.size) {
             buffer
         } else {
             ByteArray(ProtocolV2.CONTROL_PACKET_SIZE + size)
         }
         msg.encodeTo(frame, ProtocolV2.CONTROL_PACKET_SIZE)
-        encodeHeader(packet, frame)
+        encodeHeader(msg.type.id, 0, nextSeq, size, 0f, 0f, frame)
         out.write(frame, 0, ProtocolV2.CONTROL_PACKET_SIZE + size)
+        nextSeq = (nextSeq + 1) and SEQ_MASK
     }
 
-    private fun prepare(type: MessageType, pointer: Int, param: Int, x: Float, y: Float) {
+    private fun writePacket(type: MessageType, pointer: Int, param: Int, x: Float, y: Float) {
         packet.type = type
         packet.pointer = pointer
         packet.seq = nextSeq
         packet.param = param
         packet.x = x
         packet.y = y
+        write(packet)
         nextSeq = (nextSeq + 1) and SEQ_MASK
     }
 
-    private fun encodeHeader(p: ControlPacket, dest: ByteArray) {
-        BigEndian.putU8(dest, OFF_TYPE, p.type.id)
-        BigEndian.putU8(dest, OFF_POINTER, p.pointer)
-        BigEndian.putU16(dest, OFF_SEQ, p.seq)
-        BigEndian.putI32(dest, OFF_PARAM, p.param)
-        BigEndian.putF32(dest, OFF_X, p.x)
-        BigEndian.putF32(dest, OFF_Y, p.y)
+    private fun encodeHeader(
+        typeId: Int,
+        pointer: Int,
+        seq: Int,
+        param: Int,
+        x: Float,
+        y: Float,
+        dest: ByteArray
+    ) {
+        BigEndian.putU8(dest, OFF_TYPE, typeId)
+        BigEndian.putU8(dest, OFF_POINTER, pointer)
+        BigEndian.putU16(dest, OFF_SEQ, seq)
+        BigEndian.putI32(dest, OFF_PARAM, param)
+        BigEndian.putF32(dest, OFF_X, x)
+        BigEndian.putF32(dest, OFF_Y, y)
     }
 
     private companion object {

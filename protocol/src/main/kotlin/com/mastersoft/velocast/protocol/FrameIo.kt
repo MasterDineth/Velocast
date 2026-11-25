@@ -130,19 +130,21 @@ class FrameWriter(
     /** Encodes [msg] and writes it with the next sequence number. */
     fun writeMessage(msg: Payload, flags: Int = FrameRules.defaultFlags(msg.type)) {
         val size = msg.encodedSize
+        header.type = msg.type
+        header.flags = flags
+        header.seq = nextSeq
+        header.length = size
+        header.ptsUs = 0
+        header.captureUs = 0
+        check(header)
         val frame = if (ProtocolV2.FRAME_HEADER_SIZE + size <= scratch.size) {
             scratch
         } else {
             ByteArray(ProtocolV2.FRAME_HEADER_SIZE + size)
         }
         msg.encodeTo(frame, ProtocolV2.FRAME_HEADER_SIZE)
-        header.type = msg.type
-        header.flags = flags
-        header.seq = nextSeq
-        header.ptsUs = 0
-        header.captureUs = 0
-        nextSeq = (nextSeq + 1) and SEQ_MASK
         writeInPlace(header, frame, size)
+        nextSeq = (nextSeq + 1) and SEQ_MASK
     }
 
     private fun check(h: FrameHeader) {

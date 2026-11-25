@@ -12,9 +12,10 @@ object Validators {
         return id
     }
 
-    /** A normalised coordinate: finite and within [0, 1]. */
+    /** A normalised coordinate: finite, not negative zero, and within [0, 1]. */
     fun coordinate(value: Float): Float {
-        if (!value.isFinite() || value < 0f || value > 1f) {
+        val inUnitRange = value.isFinite() && value >= 0f && value <= 1f
+        if (!inUnitRange || value.toRawBits() == NEGATIVE_ZERO_BITS) {
             fail(ErrorCode.INVALID_COORDINATE, "coordinate outside [0, 1] or not finite")
         }
         return value
@@ -76,6 +77,7 @@ object Validators {
     }
 
     private const val MAX_U16 = 0xFFFF
+    private val NEGATIVE_ZERO_BITS = (-0.0f).toRawBits()
 }
 
 /** Checks for text carried in messages. */
