@@ -7,7 +7,7 @@ import java.nio.ByteOrder
  * Binary wire protocol matching VeloCast Daemon (:server).
  */
 object Protocol {
-    const val DEFAULT_HOST = "192.168.31.109"
+    const val DEFAULT_HOST = ""
     const val DEFAULT_PORT = 27183
     const val VIDEO_HEADER_SIZE = 12
     const val CONTROL_PACKET_SIZE = 14

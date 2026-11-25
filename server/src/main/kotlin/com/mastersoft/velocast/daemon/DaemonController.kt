@@ -22,7 +22,6 @@ object DaemonController {
     private const val LOG_FILE = "/data/local/tmp/velocast-daemon.log"
     private const val PID_FILE = "/data/local/tmp/velocast-daemon.pid"
     private const val MAGISK_SCRIPT = "/data/adb/service.d/velocast.sh"
-    private const val LEGACY_MAGISK_SCRIPT = "/data/adb/service.d/mirror.sh"
 
     data class ShellResult(val exitCode: Int, val output: String)
 
@@ -158,7 +157,7 @@ object DaemonController {
                 if [ -r "${'$'}p/cmdline" ]; then
                     read -r cmd < "${'$'}p/cmdline" 2>/dev/null
                     case "${'$'}cmd" in
-                        *VeloCastDaemonMain*|*MirrorServerMain*|*velocast.sh*|*mirror.sh*)
+                        *VeloCastDaemonMain*|*velocast.sh*)
                             kill -9 "${'$'}pid" 2>/dev/null || true
                             ;;
                     esac
@@ -183,7 +182,7 @@ object DaemonController {
 
     fun setAutoStartEnabled(enabled: Boolean, port: Int): Result<Unit> {
         if (!enabled) {
-            val res = runSu("rm -f \"$MAGISK_SCRIPT\" \"$LEGACY_MAGISK_SCRIPT\"")
+            val res = runSu("rm -f \"$MAGISK_SCRIPT\"")
             return if (res.exitCode == 0) Result.success(Unit)
             else Result.failure(IllegalStateException(res.output))
         }
@@ -217,7 +216,6 @@ exit 0
 
         val installCmd = """
             mkdir -p /data/adb/service.d
-            rm -f "$LEGACY_MAGISK_SCRIPT"
             cat <<'EOF' > "$MAGISK_SCRIPT"
 $scriptContent
 EOF

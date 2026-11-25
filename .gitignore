@@ -1,12 +1,23 @@
+# Gradle
 .gradle/
 build/
 **/build/
+.kotlin/
+
+# Android Studio / IntelliJ IDEA
 .idea/
+*.iml
 local.properties
+captures/
+.cxx/
+*.hprof
+
+# Android build artifacts & signing keys
 *.apk
 *.aab
 *.jks
 *.keystore
-captures/
-.cxx/
+
+# OS
 .DS_Store
+Thumbs.db
