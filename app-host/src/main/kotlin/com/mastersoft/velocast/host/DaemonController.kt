@@ -3,26 +3,34 @@ package com.mastersoft.velocast.host
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import com.mastersoft.velocast.daemon.Protocol
+import android.util.Log
+import com.mastersoft.velocast.protocol.ProtocolV2
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
 
 /**
- * Manages the root `app_process` lifecycle of VeloCastDaemonMain directly from the Host UI app.
+ * Manages the root `app_process` lifecycle of `com.mastersoft.velocast.server.Main` from the Host UI app.
  *
- * Uses `setsid` + `trap '' HUP` when launching `app_process` so the daemon is completely detached
- * from the transient `su -c` subshell and survives after the Host UI exits or backgrounds.
+ * Uses `setsid` + `trap '' HUP` when launching `app_process` so the server is detached from the
+ * transient `su -c` subshell and survives after the Host UI exits or backgrounds.
  */
 object DaemonController {
 
-    private const val MAIN_CLASS = "com.mastersoft.velocast.daemon.VeloCastDaemonMain"
+    private const val TAG = "DaemonController"
+    private const val MAIN_CLASS = "com.mastersoft.velocast.server.Main"
     private const val PKG_NAME = "com.mastersoft.velocast.host"
-    private const val LOG_FILE = "/data/local/tmp/velocast-daemon.log"
-    private const val PID_FILE = "/data/local/tmp/velocast-daemon.pid"
+    private const val STATE_DIR = "/data/adb/velocast"
+    private const val LOG_FILE = "$STATE_DIR/server.log"
+    private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
+    private const val PID_FILE = "$STATE_DIR/server.pid"
+    private const val SECRET_FILE = "$STATE_DIR/secret.hex"
     private const val MAGISK_SCRIPT = "/data/adb/service.d/velocast.sh"
+    private const val SECRET_BYTES = 32
 
     data class ShellResult(val exitCode: Int, val output: String)
 
@@ -40,7 +48,8 @@ object DaemonController {
                         out.append(line).append('\n')
                     }
                 }
-            } catch (_: Throwable) {
+            } catch (e: IOException) {
+                Log.w(TAG, "Error reading su stdout", e)
             }
         }
         readerThread.start()
@@ -54,8 +63,16 @@ object DaemonController {
             readerThread.join(500L)
             ShellResult(proc.exitValue(), out.toString().trim())
         }
-    } catch (t: Throwable) {
-        ShellResult(-1, t.message ?: "su execution failed")
+    } catch (e: IOException) {
+        Log.w(TAG, "su execution failed", e)
+        ShellResult(-1, e.message ?: "su execution failed")
+    } catch (e: SecurityException) {
+        Log.w(TAG, "su execution denied", e)
+        ShellResult(-1, e.message ?: "su execution denied")
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        Log.w(TAG, "su execution interrupted", e)
+        ShellResult(-1, e.message ?: "su execution interrupted")
     }
 
     fun checkRootAccess(): Boolean {
@@ -63,7 +80,7 @@ object DaemonController {
         return res.exitCode == 0 && res.output.contains("uid=0")
     }
 
-    fun isRunning(port: Int = Protocol.DEFAULT_PORT): Boolean {
+    fun isRunning(port: Int = ProtocolV2.DEFAULT_PORT): Boolean {
         val portHex = "%04X".format(port)
         val cmd = """
             if [ -f "$PID_FILE" ]; then
@@ -109,17 +126,26 @@ object DaemonController {
 
         stopDaemon(port)
 
+        val secretInitRes = DaemonScripts.ensureSecretFile()
+        if (secretInitRes.isFailure) return secretInitRes
+
         val launchCmd = """
+            mkdir -p "$STATE_DIR"
+            chmod 700 "$STATE_DIR"
             : > "$LOG_FILE"
+            chmod 600 "$LOG_FILE"
+            : > "$PROCESS_LOG_FILE"
+            chmod 600 "$PROCESS_LOG_FILE"
             trap '' HUP
             export CLASSPATH="$apkPath"
             if command -v setsid >/dev/null 2>&1; then
-                setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port >> "$LOG_FILE" 2>&1 </dev/null &
+                setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
             else
-                /system/bin/app_process /system/bin $MAIN_CLASS --port $port >> "$LOG_FILE" 2>&1 </dev/null &
+                /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
             fi
             DAEMON_PID=${'$'}!
             echo "${'$'}DAEMON_PID" > "$PID_FILE"
+            chmod 600 "$PID_FILE"
             echo "STARTED:${'$'}DAEMON_PID"
         """.trimIndent()
 
@@ -142,7 +168,7 @@ object DaemonController {
         )
     }
 
-    fun stopDaemon(port: Int = Protocol.DEFAULT_PORT): Result<Unit> {
+    fun stopDaemon(port: Int = ProtocolV2.DEFAULT_PORT): Result<Unit> {
         val stopCmd = """
             if [ -f "$PID_FILE" ]; then
                 PID=$(cat "$PID_FILE" 2>/dev/null)
@@ -158,7 +184,7 @@ object DaemonController {
                 if [ -r "${'$'}p/cmdline" ]; then
                     read -r cmd < "${'$'}p/cmdline" 2>/dev/null
                     case "${'$'}cmd" in
-                        *VeloCastDaemonMain*|*velocast.sh*)
+                        *$MAIN_CLASS*|*velocast.sh*)
                             kill -9 "${'$'}pid" 2>/dev/null || true
                             ;;
                     esac
@@ -182,65 +208,55 @@ object DaemonController {
     }
 
     fun setAutoStartEnabled(enabled: Boolean, port: Int): Result<Unit> {
+        val result: Result<Unit>
         if (!enabled) {
             val res = runSu("rm -f \"$MAGISK_SCRIPT\"")
-            return if (res.exitCode == 0) {
+            result = if (res.exitCode == 0) {
                 Result.success(Unit)
             } else {
                 Result.failure(IllegalStateException(res.output))
             }
-        }
-
-        val scriptContent = """
-#!/system/bin/sh
-LOG_FILE="$LOG_FILE"
-PID_FILE="$PID_FILE"
-
-while [ "${'$'}(getprop sys.boot_completed)" != "1" ]; do
-    sleep 2
-done
-sleep 5
-
-APK_PATH="${'$'}(pm path $PKG_NAME | head -n 1 | cut -d: -f2 | tr -d '\r')"
-if [ -z "${'$'}APK_PATH" ] || [ ! -f "${'$'}APK_PATH" ]; then
-    echo "[${'$'}(date)] VeloCast Host APK not installed; exiting." >> "${'$'}LOG_FILE"
-    exit 1
-fi
-
-trap '' HUP
-export CLASSPATH="${'$'}APK_PATH"
-if command -v setsid >/dev/null 2>&1; then
-    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port >> "${'$'}LOG_FILE" 2>&1 </dev/null &
-else
-    /system/bin/app_process /system/bin $MAIN_CLASS --port $port >> "${'$'}LOG_FILE" 2>&1 </dev/null &
-fi
-echo "${'$'}!" > "${'$'}PID_FILE"
-exit 0
-        """.trimIndent()
-
-        val installCmd = """
-            mkdir -p /data/adb/service.d
-            cat <<'EOF' > "$MAGISK_SCRIPT"
+        } else {
+            val secretInitRes = DaemonScripts.ensureSecretFile()
+            if (secretInitRes.isFailure) {
+                result = secretInitRes
+            } else {
+                val scriptContent = DaemonScripts.buildMagiskScript(port)
+                val installCmd = """
+                    mkdir -p /data/adb/service.d
+                    cat <<'EOF' > "$MAGISK_SCRIPT"
 $scriptContent
 EOF
-            chmod 755 "$MAGISK_SCRIPT"
-        """.trimIndent()
+                    chmod 755 "$MAGISK_SCRIPT"
+                """.trimIndent()
 
-        val res = runSu(installCmd)
-        return if (res.exitCode == 0) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to write Magisk script: ${res.output}"))
+                val res = runSu(installCmd)
+                result = if (res.exitCode == 0) {
+                    Result.success(Unit)
+                } else {
+                    Result.failure(
+                        IllegalStateException("Failed to write Magisk script: ${res.output}")
+                    )
+                }
+            }
         }
+        return result
     }
 
     fun readRecentLogs(maxLines: Int = 80): String {
-        val res = runSu("if [ -f \"$LOG_FILE\" ]; then tail -n $maxLines \"$LOG_FILE\"; fi")
+        val cmd = """
+            if [ -s "$LOG_FILE" ]; then
+                tail -n $maxLines "$LOG_FILE"
+            elif [ -s "$PROCESS_LOG_FILE" ]; then
+                tail -n $maxLines "$PROCESS_LOG_FILE"
+            fi
+        """.trimIndent()
+        val res = runSu(cmd)
         return res.output.ifBlank { "No logs yet. Tap Start Server to begin." }
     }
 
     fun clearLogs() {
-        runSu(": > \"$LOG_FILE\"")
+        runSu(": > \"$LOG_FILE\" && : > \"$PROCESS_LOG_FILE\"")
     }
 
     fun getLocalWifiIp(context: Context): String {
@@ -262,7 +278,10 @@ EOF
                     }
                 }
             }
-        } catch (_: Throwable) {
+        } catch (e: SecurityException) {
+            Log.w("DaemonController", "ConnectivityManager query denied", e)
+        } catch (e: IllegalStateException) {
+            Log.w("DaemonController", "ConnectivityManager query failed", e)
         }
 
         try {
@@ -292,9 +311,84 @@ EOF
                 }
             }
             if (lanFallback != null) return lanFallback
-        } catch (_: Throwable) {
+        } catch (e: IOException) {
+            Log.w("DaemonController", "NetworkInterface enumeration failed", e)
+        } catch (e: SecurityException) {
+            Log.w("DaemonController", "NetworkInterface enumeration denied", e)
         }
 
         return "No Wi-Fi IP"
     }
+}
+
+private object DaemonScripts {
+    private const val MAIN_CLASS = "com.mastersoft.velocast.server.Main"
+    private const val PKG_NAME = "com.mastersoft.velocast.host"
+    private const val STATE_DIR = "/data/adb/velocast"
+    private const val LOG_FILE = "$STATE_DIR/server.log"
+    private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
+    private const val PID_FILE = "$STATE_DIR/server.pid"
+    private const val SECRET_FILE = "$STATE_DIR/secret.hex"
+    private const val SECRET_BYTES = 32
+
+    fun ensureSecretFile(): Result<Unit> {
+        val check = DaemonController.runSu("[ -s \"$SECRET_FILE\" ] && echo OK || echo MISSING")
+        if (check.output.contains("OK")) {
+            return Result.success(Unit)
+        }
+        val bytes = ByteArray(SECRET_BYTES).also { SecureRandom().nextBytes(it) }
+        val hex = bytes.joinToString("") { "%02x".format(it) }
+        bytes.fill(0)
+        val cmd = """
+            mkdir -p "$STATE_DIR"
+            chmod 700 "$STATE_DIR"
+            umask 077
+            printf '%s\n' "$hex" > "$SECRET_FILE"
+            chmod 600 "$SECRET_FILE"
+        """.trimIndent()
+        val res = DaemonController.runSu(cmd)
+        return if (res.exitCode == 0) {
+            Result.success(Unit)
+        } else {
+            Result.failure(
+                IllegalStateException("Failed to initialize server secret: ${res.output}")
+            )
+        }
+    }
+
+    fun buildMagiskScript(port: Int): String = """
+#!/system/bin/sh
+STATE_DIR="$STATE_DIR"
+LOG_FILE="$LOG_FILE"
+PROCESS_LOG_FILE="$PROCESS_LOG_FILE"
+PID_FILE="$PID_FILE"
+SECRET_FILE="$SECRET_FILE"
+
+mkdir -p "${'$'}STATE_DIR"
+chmod 700 "${'$'}STATE_DIR"
+: > "${'$'}PROCESS_LOG_FILE"
+chmod 600 "${'$'}PROCESS_LOG_FILE"
+
+while [ "${'$'}(getprop sys.boot_completed)" != "1" ]; do
+    sleep 2
+done
+sleep 5
+
+APK_PATH="${'$'}(pm path $PKG_NAME | head -n 1 | cut -d: -f2 | tr -d '\r')"
+if [ -z "${'$'}APK_PATH" ] || [ ! -f "${'$'}APK_PATH" ]; then
+    echo "[${'$'}(date)] VeloCast Host APK not installed; exiting." >> "${'$'}LOG_FILE"
+    exit 1
+fi
+
+trap '' HUP
+export CLASSPATH="${'$'}APK_PATH"
+if command -v setsid >/dev/null 2>&1; then
+    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
+else
+    /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
+fi
+echo "${'$'}!" > "${'$'}PID_FILE"
+chmod 600 "${'$'}PID_FILE"
+exit 0
+    """.trimIndent()
 }
