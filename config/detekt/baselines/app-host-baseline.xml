@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ComplexCondition:DaemonController.kt:DaemonController$name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("tun") || name.startsWith("tap") || name.startsWith("dummy") || name.startsWith("p2p")</ID>
+    <ID>CyclomaticComplexMethod:DaemonController.kt:DaemonController$fun getLocalWifiIp: String</ID>
+    <ID>CyclomaticComplexMethod:HostMainActivity.kt:HostMainActivity$override fun onCreate</ID>
+    <ID>LongMethod:HostMainActivity.kt:HostMainActivity$override fun onCreate</ID>
+    <ID>LoopWithTooManyJumpStatements:DaemonController.kt:DaemonController$for</ID>
+    <ID>LoopWithTooManyJumpStatements:DaemonController.kt:DaemonController$while</ID>
+    <ID>MagicNumber:DaemonController.kt:DaemonController$15</ID>
+    <ID>MagicNumber:DaemonController.kt:DaemonController$200L</ID>
+    <ID>MagicNumber:DaemonController.kt:DaemonController$300L</ID>
+    <ID>MagicNumber:DaemonController.kt:DaemonController$4000L</ID>
+    <ID>MagicNumber:DaemonController.kt:DaemonController$500L</ID>
+    <ID>MagicNumber:HostMainActivity.kt:HostMainActivity$0.7f</ID>
+    <ID>MagicNumber:HostMainActivity.kt:HostMainActivity$2_000L</ID>
+    <ID>MagicNumber:HostMainActivity.kt:HostMainActivity$65535</ID>
+    <ID>NestedBlockDepth:DaemonController.kt:DaemonController$fun getLocalWifiIp: String</ID>
+    <ID>ReturnCount:DaemonController.kt:DaemonController$fun getLocalWifiIp: String</ID>
+    <ID>ReturnCount:DaemonController.kt:DaemonController$fun startDaemon: Result&lt;Unit&gt;</ID>
+    <ID>TooGenericExceptionCaught:DaemonController.kt:DaemonController$t: Throwable</ID>
+  </CurrentIssues>
+</SmellBaseline>
