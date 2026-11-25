@@ -246,33 +246,35 @@ class SessionGuard(
     }
 
     private fun activateAuthenticatedSession(incoming: ServerSession): Boolean {
-        val previous = synchronized(activationLock) {
-            if (closed) return false
-            val existing = activeSession
-            if (existing !== null && existing !== incoming) {
-                existing
-            } else {
-                null
+        var activated: Boolean? = null
+        while (activated == null) {
+            val previous = synchronized(activationLock) {
+                val existing = activeSession
+                if (closed) {
+                    activated = false
+                    null
+                } else if (existing != null && existing !== incoming) {
+                    existing
+                } else {
+                    if (incoming.markActiveFromGuard()) {
+                        activeSession = incoming
+                        backoffTracker.recordSuccess(incoming.peerSocket.remoteAddress)
+                        activated = true
+                    } else {
+                        activated = false
+                    }
+                    null
+                }
+            }
+            if (previous != null) {
+                logger.info(
+                    TAG,
+                    "Preempting session ${previous.id} for authenticated session ${incoming.id}"
+                )
+                previous.closeAndAwait()
             }
         }
-        if (previous != null) {
-            logger.info(
-                TAG,
-                "Preempting active session ${previous.id} for authenticated session ${incoming.id}"
-            )
-            previous.closeAndAwait()
-        }
-        return synchronized(activationLock) {
-            if (closed) {
-                false
-            } else if (!incoming.markActiveFromGuard()) {
-                false
-            } else {
-                activeSession = incoming
-                backoffTracker.recordSuccess(incoming.peerSocket.remoteAddress)
-                true
-            }
-        }
+        return activated
     }
 
     private fun recordAuthFailure(address: InetAddress) {

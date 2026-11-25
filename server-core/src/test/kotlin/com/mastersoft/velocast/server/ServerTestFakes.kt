@@ -21,6 +21,7 @@ import java.net.SocketTimeoutException
 import java.util.ArrayDeque
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
@@ -301,10 +302,13 @@ class FakeMediaPipeline(
     val resumeCount = AtomicInteger(0)
     val keyframeReqCount = AtomicInteger(0)
     val reconfigures = CopyOnWriteArrayList<Triple<Int, Int, Float>>()
+    private val closedFlag = AtomicBoolean(false)
 
     @Volatile
-    var closed = false
-        private set
+    var onBeforeClose: (() -> Unit)? = null
+
+    val closed: Boolean
+        get() = closedFlag.get()
 
     override fun start() {
         startCount.incrementAndGet()
@@ -332,8 +336,8 @@ class FakeMediaPipeline(
     }
 
     override fun close() {
-        if (!closed) {
-            closed = true
+        if (closedFlag.compareAndSet(false, true)) {
+            onBeforeClose?.invoke()
             if (startCount.get() > 0) {
                 concurrentCounter.decrementAndGet()
             }

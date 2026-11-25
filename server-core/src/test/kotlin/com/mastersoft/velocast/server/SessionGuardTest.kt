@@ -13,8 +13,11 @@ import com.mastersoft.velocast.protocol.Pong
 import com.mastersoft.velocast.protocol.TouchAction
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -269,6 +272,98 @@ class SessionGuardTest {
             cwNew.bye()
             replacement.clientOut.flush()
         }
+    }
+
+    @Test
+    fun concurrentAuthenticatedPreemptionAllowsOnlyOneWinnerAndSinglePipeline() {
+        newGuardFixture().use { f ->
+            val s1Peer = FakePeerSocket(TestClientDriver.ip(50))
+            f.acceptor.enqueue(s1Peer)
+            TestClientDriver.authenticate(s1Peer)
+            waitUntil { f.env.createdPipelines.size == 1 }
+
+            val s1ClosingStarted = CountDownLatch(1)
+            val allowS1Finish = CountDownLatch(1)
+            f.env.createdPipelines[0].onBeforeClose = {
+                s1ClosingStarted.countDown()
+                allowS1Finish.await(5, TimeUnit.SECONDS)
+            }
+
+            val s2Peer = FakePeerSocket(TestClientDriver.ip(51))
+            val s3Peer = FakePeerSocket(TestClientDriver.ip(52))
+            f.acceptor.enqueue(s2Peer)
+            f.acceptor.enqueue(s3Peer)
+
+            val (s2Cw, s2Fr) = sendHelloAndClientProof(s2Peer)
+            assertTrue(s1ClosingStarted.await(5, TimeUnit.SECONDS))
+            val (s3Cw, s3Fr) = sendHelloAndClientProof(s3Peer)
+
+            waitUntil { f.timer.entries.size >= 3 && f.timer.entries.take(3).all { it.cancelled } }
+            allowS1Finish.countDown()
+
+            waitUntil {
+                s1Peer.isClosed && (s2Peer.isClosed xor s3Peer.isClosed) &&
+                    f.guard.currentActiveSession != null
+            }
+            assertEquals(1, f.env.maxConcurrentPipelines.get())
+
+            val winnerIsS2 = !s2Peer.isClosed
+            val winnerPeer = if (winnerIsS2) s2Peer else s3Peer
+            val winnerCw = if (winnerIsS2) s2Cw else s3Cw
+            val winnerFr = if (winnerIsS2) s2Fr else s3Fr
+            assertSame(winnerPeer, f.guard.currentActiveSession?.peerSocket)
+
+            verifyWinnerSessionResponsive(winnerCw, winnerFr, winnerPeer)
+        }
+    }
+
+    private fun sendHelloAndClientProof(socket: FakePeerSocket): Pair<ControlWriter, FrameReader> {
+        val cw = ControlWriter(socket.clientOut)
+        val fr = FrameReader(socket.clientIn)
+        val client = ClientHandshake(
+            HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            0,
+            TestClientDriver.CLIENT_NONCE
+        )
+        cw.writePayload(client.hello())
+        socket.clientOut.flush()
+
+        val sh = FrameHeader()
+        assertTrue(fr.readHeader(sh))
+        fr.readPayload(sh)
+        assertEquals(MessageType.SERVER_HELLO, sh.type)
+
+        cw.writePayload(client.onServerHello(fr.payload, 0, sh.length))
+        socket.clientOut.flush()
+        return Pair(cw, fr)
+    }
+
+    private fun verifyWinnerSessionResponsive(
+        cw: ControlWriter,
+        fr: FrameReader,
+        peer: FakePeerSocket
+    ) {
+        val h = FrameHeader()
+        assertTrue(fr.readHeader(h))
+        assertEquals(MessageType.AUTH_PROOF, h.type)
+        fr.readPayload(h)
+
+        cw.phase = Phase.SESSION
+        fr.phase = Phase.SESSION
+
+        assertTrue(fr.readHeader(h))
+        assertEquals(MessageType.DEVICE_INFO, h.type)
+        fr.readPayload(h)
+
+        cw.ping(123)
+        peer.clientOut.flush()
+        assertTrue(fr.readHeader(h))
+        assertEquals(MessageType.PONG, h.type)
+        fr.readPayload(h)
+        assertEquals(123, Pong.decode(fr.payload, 0, h.length).token)
+
+        cw.bye()
+        peer.clientOut.flush()
     }
 
     private fun waitUntil(timeoutMs: Long = 3_000L, predicate: () -> Boolean) {
