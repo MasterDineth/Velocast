@@ -1,0 +1,75 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:MirrorActivity.kt:MirrorActivity$private fun populateToolboxButtons</ID>
+    <ID>CyclomaticComplexMethod:MirrorActivity.kt:MirrorActivity$private fun renderHudText</ID>
+    <ID>CyclomaticComplexMethod:MirrorClient.kt:MirrorClient$fun connect</ID>
+    <ID>CyclomaticComplexMethod:SettingsActivity.kt:SettingsActivity$private fun rebuildToolboxActionsList</ID>
+    <ID>CyclomaticComplexMethod:SettingsActivity.kt:SettingsActivity$private fun updateHudPreview</ID>
+    <ID>LongMethod:ConnectActivity.kt:ConnectActivity$override fun onCreate</ID>
+    <ID>LongMethod:MirrorActivity.kt:MirrorActivity$@SuppressLint("ClickableViewAccessibility") private fun setupFabInteraction</ID>
+    <ID>LongMethod:MirrorActivity.kt:MirrorActivity$override fun surfaceCreated</ID>
+    <ID>LongMethod:MirrorActivity.kt:MirrorActivity$private fun populateToolboxButtons</ID>
+    <ID>LongMethod:MirrorClient.kt:MirrorClient$fun connect</ID>
+    <ID>LongMethod:SettingsActivity.kt:SettingsActivity$private fun bindViews</ID>
+    <ID>LongMethod:SettingsActivity.kt:SettingsActivity$private fun rebuildToolboxActionsList</ID>
+    <ID>LongMethod:SettingsActivity.kt:SettingsActivity$private fun setupListeners</ID>
+    <ID>MagicNumber:ConnectActivity.kt:ConnectActivity$1001</ID>
+    <ID>MagicNumber:ConnectActivity.kt:ConnectActivity$34</ID>
+    <ID>MagicNumber:ConnectActivity.kt:ConnectActivity$65535</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$0.5f</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$0.90f</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$100</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$1000L</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$100f</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$12</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$150L</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$180L</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$180f</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$220L</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$240L</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$40</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$6</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$60</ID>
+    <ID>MagicNumber:MirrorActivity.kt:MirrorActivity$8_000_000</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$1000L</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$1024</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$16</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$3</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$300</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$4</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$512</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$5_000</ID>
+    <ID>MagicNumber:MirrorClient.kt:MirrorClient$64</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$0.15f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$0.2f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$10</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$100</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$100f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$11f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$13f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$18</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$3</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$30</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$40</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$5</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$50</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$67</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$70</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$75</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$8</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$80</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$8f</ID>
+    <ID>MagicNumber:SettingsActivity.kt:SettingsActivity$90</ID>
+    <ID>MagicNumber:TouchOverlayController.kt:TouchOverlayController$0.5f</ID>
+    <ID>MagicNumber:VideoDecoder.kt:VideoDecoder$25_000L</ID>
+    <ID>MagicNumber:VideoDecoder.kt:VideoDecoder$30_000</ID>
+    <ID>ReturnCount:MirrorActivity.kt:MirrorActivity$private fun renderHudText</ID>
+    <ID>TooGenericExceptionCaught:MirrorActivity.kt:MirrorActivity$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:MirrorClient.kt:MirrorClient$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:VideoDecoder.kt:VideoDecoder$t: Throwable</ID>
+    <ID>TooManyFunctions:MirrorActivity.kt:MirrorActivity : AppCompatActivityCallback</ID>
+    <ID>TooManyFunctions:SettingsActivity.kt:SettingsActivity : AppCompatActivity</ID>
+  </CurrentIssues>
+</SmellBaseline>

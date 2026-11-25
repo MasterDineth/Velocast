@@ -1,0 +1,62 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:InputInjector.kt:InputInjector$@Synchronized fun handleTouchPacket</ID>
+    <ID>CyclomaticComplexMethod:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$private fun runSession</ID>
+    <ID>CyclomaticComplexMethod:VirtualDisplayBridge.kt:VirtualDisplayBridge$private fun tryCreateDisplayManagerMirror: Boolean</ID>
+    <ID>LongMethod:InputInjector.kt:InputInjector$@Synchronized fun handleTouchPacket</ID>
+    <ID>LongMethod:VeloCastDaemonMain.kt:VeloCastDaemonMain$@JvmStatic fun main</ID>
+    <ID>LongMethod:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$private fun runSession</ID>
+    <ID>LongMethod:VirtualDisplayBridge.kt:VirtualDisplayBridge$private fun tryCreateDisplayManagerMirror: Boolean</ID>
+    <ID>LoopWithTooManyJumpStatements:ScreenEncoder.kt:ScreenEncoder$while</ID>
+    <ID>LoopWithTooManyJumpStatements:VeloCastDaemonMain.kt:VeloCastDaemonMain$while</ID>
+    <ID>MagicNumber:InputInjector.kt:InputInjector$1500L</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$12</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$16</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$24</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$3</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$32</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$4</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$40</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$48</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$5</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$56</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$6</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$7</ID>
+    <ID>MagicNumber:Protocol.kt:Protocol$8</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$0.1f</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$0.5f</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$100</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$120</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$15</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$16</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$1_000_000</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$200L</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$250_000L</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$300L</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$30_000_000</ID>
+    <ID>MagicNumber:ScreenEncoder.kt:ScreenEncoder$5</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain$16</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$1000L</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$1024</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$1500L</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$256</ID>
+    <ID>MagicNumber:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$64</ID>
+    <ID>MaxLineLength:InputInjector.kt:InputInjector$// Android 14–16 freezeDisplayRotation(int displayId, int rotation, String caller) or freezeRotation(int)</ID>
+    <ID>MaxLineLength:VirtualDisplayBridge.kt:VirtualDisplayBridge$"[VirtualDisplayBridge] Static DisplayManager.createVirtualDisplay unavailable: ${t.cause?.message ?: t.message}"</ID>
+    <ID>NestedBlockDepth:VeloCastDaemonMain.kt:VeloCastDaemonMain$@JvmStatic fun main</ID>
+    <ID>NestedBlockDepth:VirtualDisplayBridge.kt:VirtualDisplayBridge$private fun tryCreateDisplayManagerMirror: Boolean</ID>
+    <ID>PrintStackTrace:VeloCastDaemonMain.kt:VeloCastDaemonMain$t</ID>
+    <ID>ReturnCount:InputInjector.kt:InputInjector$private fun tryInvokeFreezeRotation: Boolean</ID>
+    <ID>ReturnCount:VirtualDisplayBridge.kt:VirtualDisplayBridge$private fun tryCreateDisplayManagerMirror: Boolean</ID>
+    <ID>TooGenericExceptionCaught:InputInjector.kt:InputInjector$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:ScreenEncoder.kt:ScreenEncoder$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:VeloCastDaemonMain.kt:VeloCastDaemonMain$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:VeloCastDaemonMain.kt:VeloCastDaemonMain$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:VeloCastDaemonMain.kt:VeloCastDaemonMain.ActiveSession$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:VirtualDisplayBridge.kt:VirtualDisplayBridge$t: Throwable</ID>
+    <ID>TooGenericExceptionCaught:VirtualDisplayBridge.kt:VirtualDisplayBridge.Companion$t: Throwable</ID>
+    <ID>TooManyFunctions:InputInjector.kt:InputInjector</ID>
+  </CurrentIssues>
+</SmellBaseline>
