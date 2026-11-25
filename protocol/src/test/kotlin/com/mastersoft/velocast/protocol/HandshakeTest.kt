@@ -23,7 +23,7 @@ class HandshakeTest {
 
     private fun server(secret: ByteArray = key, capabilities: Int = 0x0F): ServerHandshake {
         val auth = HmacTestAuthenticator(secret)
-        return ServerHandshake(auth, capabilities, serverNonce, device)
+        return ServerHandshake(auth, capabilities, serverNonce)
     }
 
     private fun expect(code: ErrorCode, block: () -> Unit) {
@@ -45,8 +45,9 @@ class HandshakeTest {
         val hello = c.hello().encode()
         assertArrayEquals(hex("564c4332000200000003000102030405060708090a0b0c0d0e0f"), hello)
         val serverHello = s.onHello(hello, 0, hello.size).encode()
+        assertEquals(ProtocolV2.SERVER_HELLO_SIZE, serverHello.size)
         assertArrayEquals(
-            hex("00020000000f101112131415161718191a1b1c1d1e1f00230104380960000441636d65025831"),
+            hex("00020000000f101112131415161718191a1b1c1d1e1f"),
             serverHello
         )
         val clientTranscript = Transcript.build(AuthRole.CLIENT, hello, serverHello)
@@ -54,19 +55,19 @@ class HandshakeTest {
             hex(
                 "564c433220636c69656e742070726f6f66" +
                     "564c4332000200000003000102030405060708090a0b0c0d0e0f" +
-                    "00020000000f101112131415161718191a1b1c1d1e1f00230104380960000441636d65025831"
+                    "00020000000f101112131415161718191a1b1c1d1e1f"
             ),
             clientTranscript
         )
         val clientProof = c.onServerHello(serverHello, 0, serverHello.size)
         val expectedClientProof = hex(
-            "0f94501c99a627e0c0835f7ae1cd7490" + "1cbe09dc0cf4f15186aa0ab7d68c4bec"
+            "f629bab91485d9c0ce2e01824b99b569" + "463a4d23b46c178383c11a4747b995af"
         )
         assertArrayEquals(expectedClientProof, clientProof.proof)
         val wire = clientProof.encode()
         val serverProof = s.onClientProof(wire, 0, wire.size)
         val expectedServerProof = hex(
-            "da5f592f8c3c4caa9cbd4876c3a67b5b" + "a6c5f42afa31e7e3d2e57000e496c3b2"
+            "4fba50d36619a0aa5dde12c113381b63" + "2b7fbe713ea023835145ee8a7f77f17a"
         )
         assertArrayEquals(expectedServerProof, serverProof.proof)
         val back = serverProof.encode()
@@ -119,12 +120,28 @@ class HandshakeTest {
         assertEquals(HandshakeState.ESTABLISHED, c.state)
         assertEquals(HandshakeState.ESTABLISHED, s.state)
 
-        // Switch to the session phase and exchange traffic.
+        // Switch to the session phase and exchange DeviceInfo + session traffic.
         cw.phase = Phase.SESSION
         sw.phase = Phase.SESSION
         cr2.phase = Phase.SESSION
+        sw.writeMessage(device)
         cw.touch(0, TouchAction.DOWN, 0.5f, 0.5f)
         sw.writeMessage(VideoSize(540, 1200, DisplayGeometry(1080, 2400, 0)))
+
+        val afterAuth = ByteArrayInputStream(
+            toClient.toByteArray().copyOfRange(
+                (ProtocolV2.FRAME_HEADER_SIZE + ProtocolV2.SERVER_HELLO_SIZE) +
+                    (ProtocolV2.FRAME_HEADER_SIZE + ProtocolV2.PROOF_SIZE),
+                toClient.size()
+            )
+        )
+        val crSession = FrameReader(afterAuth).also { it.phase = Phase.SESSION }
+        check(crSession.readHeader(h))
+        assertEquals(MessageType.DEVICE_INFO, h.type)
+        crSession.readPayload(h)
+        assertEquals(device, DeviceInfo.decode(crSession.payload, 0, h.length))
+        check(crSession.readHeader(h))
+        assertEquals(MessageType.VIDEO_SIZE, h.type)
     }
 
     @Test
@@ -201,11 +218,11 @@ class HandshakeTest {
         // A server that answers with a version the client did not offer is rejected.
         val c = client()
         c.hello()
-        val bad = ServerHello(3, 0, serverNonce, device).encode()
+        val bad = ServerHello(3, 0, serverNonce).encode()
         expect(ErrorCode.VERSION_MISMATCH) { c.onServerHello(bad, 0, bad.size) }
         val c2 = client()
         c2.hello()
-        val zero = ServerHello(1, 0, serverNonce, device).encode()
+        val zero = ServerHello(1, 0, serverNonce).encode()
         expect(ErrorCode.VERSION_MISMATCH) { c2.onServerHello(zero, 0, zero.size) }
     }
 
@@ -225,7 +242,7 @@ class HandshakeTest {
         assertEquals(HandshakeState.FAILED, s.state)
 
         val c = client()
-        val sh = ServerHello(2, 0, serverNonce, device).encode()
+        val sh = ServerHello(2, 0, serverNonce).encode()
         expect(ErrorCode.UNEXPECTED_MESSAGE) { c.onServerHello(sh, 0, sh.size) }
 
         val c2 = client()
