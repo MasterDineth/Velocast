@@ -302,8 +302,11 @@ class SessionGuardTest {
             allowS1Finish.countDown()
 
             waitUntil {
-                s1Peer.isClosed && (s2Peer.isClosed xor s3Peer.isClosed) &&
-                    f.guard.currentActiveSession != null
+                val activePeer = f.guard.currentActiveSession?.peerSocket
+                s1Peer.isClosed && (
+                    (!s2Peer.isClosed && s3Peer.isClosed && activePeer === s2Peer) ||
+                        (s2Peer.isClosed && !s3Peer.isClosed && activePeer === s3Peer)
+                    )
             }
             assertEquals(1, f.env.maxConcurrentPipelines.get())
 
