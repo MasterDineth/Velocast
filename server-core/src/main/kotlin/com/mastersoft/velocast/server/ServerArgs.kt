@@ -10,7 +10,9 @@ data class ServerArgs(
     val bindAddress: InetAddress = IpLiterals.LOOPBACK_V4,
     val stateDir: Path? = null,
     val secretFromStdin: Boolean = false,
-    val logLevel: LogLevel = LogLevel.INFO
+    val logLevel: LogLevel = LogLevel.INFO,
+    val bitrateMode: BitrateMode = BitrateMode.DEFAULT,
+    val sendBufferBytes: Int = TcpPeerSocket.DEFAULT_SEND_BUFFER_BYTES
 ) {
     companion object {
         private const val MAX_PORT = 65_535
@@ -21,6 +23,8 @@ data class ServerArgs(
             var stateDir: Path? = null
             var secretFromStdin = false
             var logLevel = LogLevel.INFO
+            var bitrateMode = BitrateMode.DEFAULT
+            var sendBufferBytes = TcpPeerSocket.DEFAULT_SEND_BUFFER_BYTES
 
             var index = 0
             while (index < args.size) {
@@ -42,6 +46,15 @@ data class ServerArgs(
                         logLevel = LogLevel.parse(raw)
                     }
 
+                    "--bitrate-mode" -> {
+                        val raw = nextArgValue(args, index++, flag)
+                        bitrateMode = BitrateMode.parse(raw)
+                    }
+
+                    "--send-buffer-bytes" -> {
+                        sendBufferBytes = parseSendBufferBytes(nextArgValue(args, index++, flag))
+                    }
+
                     else -> throw IllegalArgumentException("Unknown argument: $flag")
                 }
                 index++
@@ -52,8 +65,19 @@ data class ServerArgs(
                 bindAddress = bindAddress,
                 stateDir = stateDir,
                 secretFromStdin = secretFromStdin,
-                logLevel = logLevel
+                logLevel = logLevel,
+                bitrateMode = bitrateMode,
+                sendBufferBytes = sendBufferBytes
             )
+        }
+
+        private fun parseSendBufferBytes(raw: String): Int {
+            val parsed = raw.toIntOrNull()
+                ?: throw IllegalArgumentException("Invalid --send-buffer-bytes value: $raw")
+            require(parsed >= TcpPeerSocket.MIN_SEND_BUFFER_BYTES) {
+                "--send-buffer-bytes must be >= ${TcpPeerSocket.MIN_SEND_BUFFER_BYTES}: $raw"
+            }
+            return parsed
         }
 
         private fun parsePort(raw: String): Int {

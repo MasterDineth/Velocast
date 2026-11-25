@@ -19,7 +19,7 @@ class ServerRunner(
     private val stdout: PrintStream = System.out,
     private val random: SecureRandom = SecureRandom(),
     private val acceptorFactory: (InetAddress, Int, Logger) -> ServerAcceptor = { addr, port, log ->
-        TcpServerAcceptor(addr, port, log)
+        TcpServerAcceptor(addr, port, log, args.sendBufferBytes)
     }
 ) : Closeable {
     private val lock = Any()
