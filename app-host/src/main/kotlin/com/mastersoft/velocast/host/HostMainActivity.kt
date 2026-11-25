@@ -17,7 +17,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.widget.NestedScrollView
 import com.google.android.material.switchmaterial.SwitchMaterial
-import com.mastersoft.velocast.daemon.Protocol
+import com.mastersoft.velocast.protocol.ProtocolV2
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -74,7 +74,7 @@ class HostMainActivity : AppCompatActivity() {
         logScrollView = findViewById(R.id.logScrollView)
         txtDaemonLogs = findViewById(R.id.txtDaemonLogs)
 
-        editServerPort.setText(prefs.getInt("port", Protocol.DEFAULT_PORT).toString())
+        editServerPort.setText(prefs.getInt("port", ProtocolV2.DEFAULT_PORT).toString())
 
         btnCopyEndpoint.setOnClickListener {
             val ip = DaemonController.getLocalWifiIp(this)
@@ -126,7 +126,8 @@ class HostMainActivity : AppCompatActivity() {
 
         switchAutoStart.setOnCheckedChangeListener { _, checked ->
             if (suppressAutoStartListener) return@setOnCheckedChangeListener
-            val port = editServerPort.text.toString().trim().toIntOrNull() ?: Protocol.DEFAULT_PORT
+            val port =
+                editServerPort.text.toString().trim().toIntOrNull() ?: ProtocolV2.DEFAULT_PORT
 
             uiScope.launch {
                 val res = withContext(Dispatchers.IO) {
@@ -182,7 +183,7 @@ class HostMainActivity : AppCompatActivity() {
                 delay(2_000L)
                 if (isTransitioning) continue
                 val port =
-                    editServerPort.text.toString().trim().toIntOrNull() ?: Protocol.DEFAULT_PORT
+                    editServerPort.text.toString().trim().toIntOrNull() ?: ProtocolV2.DEFAULT_PORT
                 val ip =
                     withContext(Dispatchers.IO) {
                         DaemonController.getLocalWifiIp(this@HostMainActivity)
@@ -223,7 +224,7 @@ class HostMainActivity : AppCompatActivity() {
     }
 
     private fun refreshState(promptRoot: Boolean) {
-        val port = editServerPort.text.toString().trim().toIntOrNull() ?: Protocol.DEFAULT_PORT
+        val port = editServerPort.text.toString().trim().toIntOrNull() ?: ProtocolV2.DEFAULT_PORT
         uiScope.launch {
             val ip =
                 withContext(Dispatchers.IO) {
