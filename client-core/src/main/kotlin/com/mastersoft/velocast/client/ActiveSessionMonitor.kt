@@ -180,7 +180,24 @@ internal class ActiveSessionMonitor(
         when (status.kind) {
             StatusKind.DISPLAY_POWER -> {
                 val powerOn = status.value == 1
-                stateHolder.updateStreaming { it.copy(isDisplayPowerOn = powerOn) }
+                val parsedCaps = StatusCapabilityParser.parseDetail(status.detail)
+                stateHolder.updateStreaming { current ->
+                    if (parsedCaps.isEmpty()) {
+                        current.copy(isDisplayPowerOn = powerOn)
+                    } else {
+                        val mergedCaps = current.serverCapabilities + parsedCaps
+                        val degradedFromSummary = parsedCaps.filterValues { !it }.keys
+                        val healthyFromSummary = parsedCaps.filterValues { it }.keys
+                        val mergedDegraded =
+                            (current.degradedCapabilities - healthyFromSummary) +
+                                degradedFromSummary
+                        current.copy(
+                            isDisplayPowerOn = powerOn,
+                            serverCapabilities = mergedCaps,
+                            degradedCapabilities = mergedDegraded
+                        )
+                    }
+                }
             }
 
             StatusKind.SCREEN_LOCKED -> {
@@ -192,10 +209,21 @@ internal class ActiveSessionMonitor(
 
             StatusKind.FPS -> stateHolder.updateStreaming { it.copy(fps = status.value) }
 
+            StatusKind.DEGRADED -> {
+                val capName = status.detail.trim()
+                if (capName.isNotEmpty()) {
+                    stateHolder.updateStreaming { current ->
+                        current.copy(
+                            serverCapabilities = current.serverCapabilities + (capName to false),
+                            degradedCapabilities = current.degradedCapabilities + capName
+                        )
+                    }
+                }
+            }
+
             StatusKind.ROTATION,
             StatusKind.PAUSED,
-            StatusKind.DROPPED_FRAMES,
-            StatusKind.DEGRADED -> Unit
+            StatusKind.DROPPED_FRAMES -> Unit
         }
     }
 
@@ -224,5 +252,28 @@ internal class ActiveSessionMonitor(
     private companion object {
         const val MAX_PENDING_PINGS = 16
         const val MICROS_PER_MILLI = 1_000L
+    }
+}
+
+internal object StatusCapabilityParser {
+    fun parseDetail(detail: String): Map<String, Boolean> {
+        if (detail.isBlank() || !detail.contains('=')) return emptyMap()
+        val out = LinkedHashMap<String, Boolean>()
+        for (entry in detail.split(',')) {
+            val eqIdx = entry.indexOf('=')
+            if (eqIdx > 0 && eqIdx < entry.length - 1) {
+                val key = entry.substring(0, eqIdx).trim()
+                val rawVal = entry.substring(eqIdx + 1).trim()
+                val flag = when (rawVal) {
+                    "1", "true" -> true
+                    "0", "false" -> false
+                    else -> null
+                }
+                if (key.isNotEmpty() && flag != null) {
+                    out[key] = flag
+                }
+            }
+        }
+        return out
     }
 }

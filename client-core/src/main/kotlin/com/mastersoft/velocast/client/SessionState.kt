@@ -53,6 +53,8 @@ sealed interface SessionState {
         val bitrateBps: Int? = null,
         val fps: Int? = null,
         val rttMs: Long? = null,
+        val serverCapabilities: Map<String, Boolean> = emptyMap(),
+        val degradedCapabilities: Set<String> = emptySet(),
         val nonFatalError: SessionError? = null
     ) : SessionState
 

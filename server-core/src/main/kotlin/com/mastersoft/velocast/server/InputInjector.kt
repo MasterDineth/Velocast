@@ -22,6 +22,9 @@ class InjectionDeniedException(message: String, cause: Throwable? = null) :
  * constructors so [InputInjector] is testable on the JVM without Android instrumentation.
  */
 interface InjectorSink {
+    val hasInputInjection: Boolean
+        get() = true
+
     val hasNotificationShade: Boolean
         get() = true
 
@@ -81,6 +84,9 @@ class InputInjector(
     val activePointerCount: Int
         get() = synchronized(lock) { activeCount }
 
+    val hasInputInjection: Boolean
+        get() = sink.hasInputInjection
+
     val hasNotificationShade: Boolean
         get() = sink.hasNotificationShade
 
@@ -119,8 +125,10 @@ class InputInjector(
         }
     }
 
-    fun injectKey(keyCode: Int, action: KeyAction) {
-        KeyCodes.require(keyCode)
+    fun injectKey(keyCode: Int, action: KeyAction, requireAllowList: Boolean = true) {
+        if (requireAllowList) {
+            KeyCodes.require(keyCode)
+        }
         val now = clock.uptimeMillis()
         val androidAction = if (action == KeyAction.DOWN) {
             KeyEvent.ACTION_DOWN
@@ -305,5 +313,6 @@ class InputInjector(
         private const val TAG = "InputInjector"
         private const val MAX_SLOTS = ProtocolV2.MAX_POINTER_ID + 1
         private const val KEY_TAP_DURATION_MS = 10L
+        internal const val KEYCODE_PASTE = 279
     }
 }

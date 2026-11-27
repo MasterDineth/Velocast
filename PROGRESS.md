@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S05A — Shell-user feasibility spike tooling & `CapabilityProbe` (complete on `step/S05a-spike`).
+S05B — Shell-user spike results, capability matrix & platform shim fixes (complete on `step/S05b-spike-results`, closing `SEC-04` evidence and `CQ-03` probe/shims).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -39,13 +39,20 @@ S05A — Shell-user feasibility spike tooling & `CapabilityProbe` (complete on `
   - Added `CapabilityProbe`, `ProbeResult` (`Supported`, `Unsupported`, `Denied`), `CapabilityProbeBackend`, `AndroidCapabilityProbeBackend`, and `CapabilityProbeMain` exercising `virtual_display`, `input_injection`, `notification_shade`, `rotation`, `display_power`, `wake`, and `clipboard`, emitting one JSON line per capability.
   - Added `:server-core:assembleDexJar` Gradle task (`server-core/build.gradle.kts`) and spike scripts `tools/spike/run-shell-server.sh`, `tools/spike/run-shell-server.ps1`, and `tools/spike/README.md`.
   - Added unit tests (`CapabilityProbeTest`, `FakeContextIdentityTest`) and ran `run-shell-server.ps1` against `M2101K6G` (Android 16, API 36) and `25019PNF3C` (Android 17, API 37), saving results in `tools/spike/results/`.
+- S05B — Shell-user capability matrix, `platform/` shim fixes & `STATUS` capability reporting (complete on `step/S05b-spike-results`):
+  - Fixed Android 14+ (`API 34+`) `DisplayPowerShim` `UnsatisfiedLinkError` by loading `com.android.server.display.DisplayControl` from `/system/framework/services.jar` via `ClassLoaderFactory.createClassLoader(..., isNamespaceShared = true)` and binding `libandroid_servers.so` via `Runtime.loadLibrary0` cached once per `app_process` lifetime, with eager token verification and API 26-28 / 29-33 `SurfaceControl` fallbacks.
+  - Added `PlatformApiPolicy` and `ClipboardShim` (`ClipboardBackend`, `ReflectionClipboardBackend`, `ClipboardBinderInvoker`) supporting AOSP API 26-37 and 6-arg OEM `IClipboard` signatures with `FakeContext` (`com.android.shell`), plus `CLIPBOARD` session handling and optional `KEYCODE_PASTE` injection in `ServerSession`.
+  - Updated `VirtualDisplayBridge` (`FakeContext` + `VirtualDisplayConfig` / `DisplayManager(Context)` per-API-level fallbacks), `BinderInjectorSink` (`InputManagerGlobal` API 34+ vs `InputManager` API 26-33, startup `KEYCODE_UNKNOWN` injection probe, removal of raw `service call statusbar` transaction IDs, `com.android.shell` caller package on `IWindowManager.freezeRotation`/`thawRotation`), `AndroidDeviceStateController`, and `CleanUp`.
+  - Expanded `ServerCapabilities` (`input_injection`, `rotation_watcher`, `display_power`, `notification_shade`, `wake`, `clipboard`) and wired viewer-side `STATUS` parsing (`StatusKind.DISPLAY_POWER` summary + `StatusKind.DEGRADED`) into `SessionState.Streaming.serverCapabilities` and `degradedCapabilities` in `:client-core`.
+  - Verified **7 / 7** `supported` capabilities in `tools/spike/results/M2101K6G-android36.json` and `tools/spike/results/25019PNF3C-android37.json` and completed full protocol-v2 streaming sessions as `uid 2000` (`LaunchMode.SHELL`, `capabilities=0x1a`) on both physical phones.
+  - Wrote `docs/spike-shell-user.md` and updated `docs/architecture.md`, `docs/findings.md`, `docs/README.md`, and `tools/spike/README.md`.
 
 ## Next
-- Collect remaining device matrix results (Android 11, 13, 14, plus additional OEM ROMs) under `tools/spike/results/` and proceed to S05B (`docs/spike-shell-user.md` and platform shim fixes).
+- Proceed to S06 — Session security: pairing secret, key derivation and AEAD (`step/S06-security`).
 
 ## Open questions
 - None.
 
 ## Owner checks pending (needs a real phone)
+- Confirm on device (`S05`): run `tools/spike/run-shell-server.sh` (or `.ps1`) on physical Android 11 (API 30), Android 13 (API 33), and Android 14 (API 34, e.g. Samsung One UI) phones, plus on Xiaomi HyperOS with **USB debugging (Security settings)** toggled off to observe `Denied` / `INJECTION_DENIED`, and commit the resulting JSON files under `tools/spike/results/`.
 - On the rooted old phone, start the server through `:app-host` (`DaemonController` -> `com.mastersoft.velocast.server.Main` with `/data/adb/velocast`), connect, rotate three times, `kill -9` the server, and confirm rotation lock and display state are restored.
-- Run `./gradlew :server-core:connectedDebugAndroidTest` on a physical device or emulator if not already verified on CI/local device.

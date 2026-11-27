@@ -13,6 +13,8 @@ import com.mastersoft.velocast.protocol.Status
 import com.mastersoft.velocast.protocol.StatusKind
 import com.mastersoft.velocast.protocol.Validators
 import com.mastersoft.velocast.protocol.VideoSize
+import com.mastersoft.velocast.server.platform.FakeContext
+import com.mastersoft.velocast.server.platform.PlatformContext
 import com.mastersoft.velocast.server.platform.VirtualDisplayBridge
 import java.io.Closeable
 import java.io.IOException
@@ -35,12 +37,15 @@ interface CaptureBackend {
     fun startCapture(surface: Surface, width: Int, height: Int): Closeable
 }
 
-class VirtualDisplayCaptureBackend(private val logger: Logger) : CaptureBackend {
+class VirtualDisplayCaptureBackend(
+    private val logger: Logger,
+    private val platformContext: PlatformContext = FakeContext()
+) : CaptureBackend {
     override fun queryDisplayGeometry(): DisplayGeometry =
-        VirtualDisplayBridge(logger).queryDefaultDisplayGeometry()
+        VirtualDisplayBridge(logger, platformContext).queryDefaultDisplayGeometry()
 
     override fun startCapture(surface: Surface, width: Int, height: Int): Closeable {
-        val bridge = VirtualDisplayBridge(logger)
+        val bridge = VirtualDisplayBridge(logger, platformContext)
         bridge.startMirroring(surface, width, height)
         return bridge
     }

@@ -1,14 +1,17 @@
 package com.mastersoft.velocast.server
 
 import android.os.Build
-import android.os.Process
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.DisplayGeometry
 import com.mastersoft.velocast.protocol.LaunchMode
 import com.mastersoft.velocast.protocol.ProtocolV2
 import com.mastersoft.velocast.server.platform.AndroidDeviceStateController
 import com.mastersoft.velocast.server.platform.BinderInjectorSink
+import com.mastersoft.velocast.server.platform.ClipboardBackend
 import com.mastersoft.velocast.server.platform.DeviceStateController
+import com.mastersoft.velocast.server.platform.FakeContext
+import com.mastersoft.velocast.server.platform.PlatformContext
+import com.mastersoft.velocast.server.platform.ReflectionClipboardBackend
 import com.mastersoft.velocast.server.platform.RotationWatcherShim
 import com.mastersoft.velocast.server.platform.SavedDeviceState
 import com.mastersoft.velocast.server.platform.ServerCapabilities
@@ -37,6 +40,8 @@ interface SessionEnvironment {
 
     fun createStateController(): DeviceStateController? = null
 
+    fun createClipboardBackend(): ClipboardBackend? = null
+
     fun startCleanUpGuardian(
         state: SavedDeviceState,
         restoreDisplayPower: Boolean
@@ -48,10 +53,12 @@ interface SessionEnvironment {
         injector: InputInjector,
         hasRotationWatcher: Boolean
     ): ServerCapabilities = ServerCapabilities(
+        inputInjection = injector.hasInputInjection,
         rotationWatcher = hasRotationWatcher,
         displayPowerControl = false,
-        notificationShade = true,
-        wake = true
+        notificationShade = injector.hasNotificationShade,
+        wake = injector.hasWakeKeyInjection,
+        clipboard = true
     )
 }
 
@@ -59,9 +66,17 @@ class AndroidSessionEnvironment(
     private val clock: ServerClock,
     private val logger: Logger,
     private val stateDir: Path? = null,
-    private val bitrateMode: BitrateMode = BitrateMode.DEFAULT
+    private val bitrateMode: BitrateMode = BitrateMode.DEFAULT,
+    private val platformContext: PlatformContext = FakeContext()
 ) : SessionEnvironment {
-    private val stateController = AndroidDeviceStateController(logger)
+    private val stateController = AndroidDeviceStateController(
+        logger = logger,
+        platformContext = platformContext
+    )
+    private val clipboardBackend = ReflectionClipboardBackend(
+        platformContext = platformContext,
+        logger = logger
+    )
 
     override val capabilities: Int
         get() {
@@ -69,12 +84,15 @@ class AndroidSessionEnvironment(
             if (stateController.displayPowerSupported) {
                 mask = mask or ServerCapabilities.FEATURE_DISPLAY_POWER
             }
+            if (clipboardBackend.isSupported) {
+                mask = mask or ServerCapabilities.FEATURE_CLIPBOARD
+            }
             return mask
         }
 
     override fun queryDeviceInfo(): DeviceInfo {
-        val display = VirtualDisplayBridge(logger).queryDefaultDisplayGeometry()
-        val launchMode = if (Process.myUid() == 0) LaunchMode.ROOT else LaunchMode.SHELL
+        val display = VirtualDisplayBridge(logger, platformContext).queryDefaultDisplayGeometry()
+        val launchMode = if (platformContext.isRootUid) LaunchMode.ROOT else LaunchMode.SHELL
         return DeviceInfo(
             sdkInt = Build.VERSION.SDK_INT,
             launchMode = launchMode,
@@ -87,7 +105,7 @@ class AndroidSessionEnvironment(
     override fun createInjector(display: DisplayGeometry): InputInjector = InputInjector(
         displayWidth = display.width,
         displayHeight = display.height,
-        sink = BinderInjectorSink(logger),
+        sink = BinderInjectorSink(logger, platformContext),
         clock = clock,
         logger = logger
     )
@@ -102,10 +120,13 @@ class AndroidSessionEnvironment(
         clock = clock,
         logger = logger,
         options = StreamOptions(bitrateMode = bitrateMode),
+        captureBackend = VirtualDisplayCaptureBackend(logger, platformContext),
         onGeometryChanged = onGeometryChanged
     )
 
     override fun createStateController(): DeviceStateController = stateController
+
+    override fun createClipboardBackend(): ClipboardBackend = clipboardBackend
 
     override fun startCleanUpGuardian(
         state: SavedDeviceState,
@@ -124,10 +145,12 @@ class AndroidSessionEnvironment(
         injector: InputInjector,
         hasRotationWatcher: Boolean
     ): ServerCapabilities = ServerCapabilities(
+        inputInjection = injector.hasInputInjection,
         rotationWatcher = hasRotationWatcher,
         displayPowerControl = stateController.displayPowerSupported,
         notificationShade = injector.hasNotificationShade,
-        wake = injector.hasWakeKeyInjection
+        wake = injector.hasWakeKeyInjection,
+        clipboard = clipboardBackend.isSupported
     )
 
     private fun truncateUtf8(text: String, maxBytes: Int): String {

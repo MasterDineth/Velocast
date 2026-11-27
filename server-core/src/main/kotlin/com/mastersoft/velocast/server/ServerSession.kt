@@ -10,6 +10,7 @@ import com.mastersoft.velocast.protocol.DeviceAction
 import com.mastersoft.velocast.protocol.ErrorCode
 import com.mastersoft.velocast.protocol.ErrorMessage
 import com.mastersoft.velocast.protocol.FrameWriter
+import com.mastersoft.velocast.protocol.KeyAction
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.Pong
@@ -21,8 +22,10 @@ import com.mastersoft.velocast.protocol.Status
 import com.mastersoft.velocast.protocol.StatusKind
 import com.mastersoft.velocast.protocol.TextInput
 import com.mastersoft.velocast.protocol.TouchAction
+import com.mastersoft.velocast.server.platform.ClipboardBackend
 import com.mastersoft.velocast.server.platform.DeviceStateController
 import com.mastersoft.velocast.server.platform.SavedDeviceState
+import com.mastersoft.velocast.server.platform.ServerCapabilities
 import java.io.Closeable
 import java.io.IOException
 import java.net.InetAddress
@@ -245,7 +248,7 @@ class ServerSession(
             val resources = setupActiveResources(deviceInfo.display.rotation, deviceInfo.display)
                 ?: return
 
-            SessionCommandHelpers.reportInitialCapabilities(
+            val initialCaps = SessionCommandHelpers.reportInitialCapabilities(
                 environment = environment,
                 injector = resources.injector,
                 hasRotationWatcher = resources.watcher != null,
@@ -254,7 +257,7 @@ class ServerSession(
             )
             resources.pipeline.start()
             logger.info(TAG, "Session $id active for ${peerSocket.remoteAddress.hostAddress}")
-            readSessionCommands(resources.injector, resources.pipeline, resources.controller)
+            readSessionCommands(resources, initialCaps)
         } catch (e: ProtocolException) {
             logger.warn(TAG, "Session $id protocol violation: ${e.code}", e)
             SessionIoHelpers.sendErrorQuietly(
@@ -288,6 +291,7 @@ class ServerSession(
     ): ActiveResources? {
         val injector = environment.createInjector(display)
         val controller = environment.createStateController()
+        val clipboard = environment.createClipboardBackend()
         val savedState = controller?.captureState()
         val guardian = if (savedState != null) {
             environment.startCleanUpGuardian(savedState, controller.displayPowerSupported)
@@ -323,21 +327,18 @@ class ServerSession(
             SessionIoHelpers.disarmGuardianQuietly(guardian, id, logger)
             return null
         }
-        return ActiveResources(injector, pipeline, watcher, controller, savedState)
+        return ActiveResources(injector, pipeline, watcher, controller, clipboard, savedState)
     }
 
-    private fun readSessionCommands(
-        injector: InputInjector,
-        pipeline: MediaPipeline,
-        controller: DeviceStateController?
-    ) {
+    private fun readSessionCommands(resources: ActiveResources, initialCaps: ServerCapabilities) {
         val dispatcher = SessionCommandDispatcher(
             sessionId = id,
             controlReader = controlReader,
             packet = packet,
             frameSink = frameSink,
             clock = clock,
-            logger = logger
+            logger = logger,
+            initialInjectionDegraded = !initialCaps.inputInjection
         )
         var keepReading = true
         while (keepReading && state == SessionState.Active && !peerSocket.isClosed) {
@@ -346,7 +347,12 @@ class ServerSession(
                 keepReading = false
             } else {
                 seqTracker.onSeq(packet.seq)
-                keepReading = dispatcher.dispatch(injector, pipeline, controller)
+                keepReading = dispatcher.dispatch(
+                    resources.injector,
+                    resources.pipeline,
+                    resources.controller,
+                    resources.clipboard
+                )
             }
         }
     }
@@ -400,6 +406,7 @@ class ServerSession(
         val pipeline: MediaPipeline,
         val watcher: Closeable?,
         val controller: DeviceStateController?,
+        val clipboard: ClipboardBackend?,
         val savedState: SavedDeviceState?
     )
 
@@ -414,14 +421,17 @@ private class SessionCommandDispatcher(
     private val packet: ControlPacket,
     private val frameSink: SessionFrameSink,
     private val clock: ServerClock,
-    private val logger: Logger
+    private val logger: Logger,
+    initialInjectionDegraded: Boolean
 ) {
     private var injectionDeniedDuringMove = false
+    private var injectionDegradedReported = initialInjectionDegraded
 
     fun dispatch(
         injector: InputInjector,
         pipeline: MediaPipeline,
-        controller: DeviceStateController?
+        controller: DeviceStateController?,
+        clipboard: ClipboardBackend?
     ): Boolean {
         when (packet.type) {
             MessageType.TOUCH -> dispatchTouch(injector)
@@ -438,10 +448,7 @@ private class SessionCommandDispatcher(
                 )
             }
 
-            MessageType.CLIPBOARD -> {
-                val clip = ClipboardMessage.decode(controlReader.payload, 0, packet.payloadLength)
-                logger.debug(TAG, "Session $sessionId received CLIPBOARD (paste=${clip.paste})")
-            }
+            MessageType.CLIPBOARD -> dispatchClipboard(injector, clipboard)
 
             MessageType.CONFIG_STREAM -> {
                 pipeline.reconfigure(packet.param, packet.x.toInt(), packet.y)
@@ -492,6 +499,25 @@ private class SessionCommandDispatcher(
         }
     }
 
+    private fun dispatchClipboard(injector: InputInjector, clipboard: ClipboardBackend?) {
+        val clip = ClipboardMessage.decode(controlReader.payload, 0, packet.payloadLength)
+        val ok = clipboard != null && clipboard.isSupported && clipboard.setText(clip.text)
+        if (!ok) {
+            frameSink.enqueuePriority(
+                Status(
+                    StatusKind.DEGRADED,
+                    ServerCapabilities.BIT_CLIPBOARD,
+                    ServerCapabilities.CAP_CLIPBOARD
+                )
+            )
+        } else if (clip.paste) {
+            runWithInjectionGuard(isMove = false) {
+                injector.injectKey(InputInjector.KEYCODE_PASTE, KeyAction.DOWN, false)
+                injector.injectKey(InputInjector.KEYCODE_PASTE, KeyAction.UP, false)
+            }
+        }
+    }
+
     private fun dispatchAction(injector: InputInjector, controller: DeviceStateController?) {
         val action = packet.deviceAction()
         if (action == DeviceAction.DISPLAY_POWER_ON || action == DeviceAction.DISPLAY_POWER_OFF) {
@@ -503,7 +529,11 @@ private class SessionCommandDispatcher(
                 frameSink.enqueuePriority(Status(StatusKind.DISPLAY_POWER, if (turnOn) 1 else 0))
             } else {
                 frameSink.enqueuePriority(
-                    Status(StatusKind.DEGRADED, BIT_DISPLAY_POWER, "display_power")
+                    Status(
+                        StatusKind.DEGRADED,
+                        ServerCapabilities.BIT_DISPLAY_POWER,
+                        ServerCapabilities.CAP_DISPLAY_POWER
+                    )
                 )
             }
         } else {
@@ -517,6 +547,12 @@ private class SessionCommandDispatcher(
         try {
             block()
         } catch (e: InjectionDeniedException) {
+            if (!injectionDegradedReported) {
+                injectionDegradedReported = true
+                frameSink.enqueuePriority(
+                    Status(StatusKind.DEGRADED, 0, ServerCapabilities.CAP_INPUT_INJECTION)
+                )
+            }
             if (!isMove || !injectionDeniedDuringMove) {
                 if (isMove) injectionDeniedDuringMove = true
                 logger.warn(TAG, "Session $sessionId input injection denied", e)
@@ -530,7 +566,6 @@ private class SessionCommandDispatcher(
 
     private companion object {
         const val TAG = "ServerSession"
-        const val BIT_DISPLAY_POWER = 3
     }
 }
 
@@ -541,7 +576,7 @@ private object SessionCommandHelpers {
         hasRotationWatcher: Boolean,
         savedState: SavedDeviceState?,
         frameSink: SessionFrameSink
-    ) {
+    ): ServerCapabilities {
         val caps = environment.probeCapabilities(injector, hasRotationWatcher)
         val powerVal = if (savedState?.displayPowerOn != false) 1 else 0
         frameSink.enqueuePriority(
@@ -550,6 +585,7 @@ private object SessionCommandHelpers {
         for (degraded in caps.degradedStatuses()) {
             frameSink.enqueuePriority(degraded)
         }
+        return caps
     }
 }
 
