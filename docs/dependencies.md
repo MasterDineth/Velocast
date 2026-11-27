@@ -23,5 +23,5 @@ Record every dependency before using it. Check the licence text yourself; do not
 | ktlint CLI (`com.pinterest.ktlint:ktlint-cli`) | 1.8.0 | MIT | Root Spotless | Kotlin style formatter/linter invoked by Spotless | 2026-11-25 |
 | Detekt Gradle Plugin (`dev.detekt`) | 2.0.0-alpha.6 | Apache-2.0 | All modules | Static analysis (`io.gitlab.arturbosch.detekt:1.23.8` targets Gradle 8.x and breaks on Gradle 9/Kotlin 2.4) | 2026-11-25 |
 | JUnit (`junit:junit`) | 4.13.2 | EPL-1.0 | `:protocol`, `:server-core`, `:client-core`, `:app-viewer` | Unit test runner | 2026-11-25 |
-| AndroidX Test Runner (`androidx.test:runner`) | 1.6.1 | Apache-2.0 | `:server-core` (`androidTest`) | `AndroidJUnitRunner` for encoder instrumentation tests | 2026-11-25 |
-| AndroidX Test JUnit (`androidx.test.ext:junit`) | 1.2.1 | Apache-2.0 | `:server-core` (`androidTest`) | `@RunWith(AndroidJUnit4::class)` instrumentation test runner | 2026-11-25 |
+| AndroidX Test Runner (`androidx.test:runner`) | 1.6.1 | Apache-2.0 | `:server-core` (`androidTest`), `:client-core` (`androidTest`) | `AndroidJUnitRunner` for encoder/decoder instrumentation tests | 2026-11-25 |
+| AndroidX Test JUnit (`androidx.test.ext:junit`) | 1.2.1 | Apache-2.0 | `:server-core` (`androidTest`), `:client-core` (`androidTest`) | `@RunWith(AndroidJUnit4::class)` instrumentation test runner | 2026-11-25 |

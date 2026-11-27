@@ -63,7 +63,7 @@ interface SessionFrameConsumer {
 
     fun onVideoSize(videoSize: VideoSize) = Unit
 
-    fun onVideoFrame(frame: ReceivedFrame) = Unit
+    fun onVideoFrame(frame: ReceivedFrame) = frame.release()
 
     fun onStatus(status: Status) = Unit
 
@@ -71,10 +71,25 @@ interface SessionFrameConsumer {
 
     fun onPong(pong: Pong, sentAtMs: Long?, receivedAtMs: Long) = Unit
 
+    fun onPongMicros(pong: Pong, sentAtUs: Long?, receivedAtUs: Long) = Unit
+
     fun onNonFatalError(error: SessionError) = Unit
 }
 
 object NoOpSessionFrameConsumer : SessionFrameConsumer
+
+/** Hooks invoked by [SessionEngine] around lifecycle transitions for touch/media cleanup. */
+interface SessionLifecycleHooks {
+    suspend fun onBeforePause() = Unit
+
+    suspend fun onBeforeDisconnect() = Unit
+
+    fun onConnectionLost() = Unit
+
+    fun onSessionEnded() = Unit
+}
+
+object NoOpSessionLifecycleHooks : SessionLifecycleHooks
 
 data class StreamConfig(val bitrateBps: Int, val fps: Int, val scale: Float) {
     init {

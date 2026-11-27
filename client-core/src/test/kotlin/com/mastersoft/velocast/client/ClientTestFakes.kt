@@ -61,7 +61,8 @@ internal class RecordingFrameConsumer : SessionFrameConsumer {
     }
 
     override fun onVideoFrame(frame: ReceivedFrame) {
-        videoFrames += frame
+        videoFrames += frame.copyUnpooled()
+        frame.release()
     }
 
     override fun onStatus(status: Status) {

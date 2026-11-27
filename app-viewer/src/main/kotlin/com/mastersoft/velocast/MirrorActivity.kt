@@ -12,7 +12,6 @@ import android.provider.MediaStore
 import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
-import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.SurfaceHolder
@@ -29,9 +28,25 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.mastersoft.velocast.client.ClientMediaSession
+import com.mastersoft.velocast.client.HmacSha256Authenticator
+import com.mastersoft.velocast.client.LaunchPhase
+import com.mastersoft.velocast.client.ServerEndpoint
+import com.mastersoft.velocast.client.ServerLauncher
+import com.mastersoft.velocast.client.SessionConfig
+import com.mastersoft.velocast.client.SessionState
+import com.mastersoft.velocast.client.StreamConfig
+import com.mastersoft.velocast.protocol.DeviceAction
+import com.mastersoft.velocast.protocol.KeyCodes
+import com.mastersoft.velocast.protocol.ProtocolV2
+import java.security.SecureRandom
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class MirrorActivity :
     AppCompatActivity(),
@@ -43,11 +58,12 @@ class MirrorActivity :
         const val EXTRA_BITRATE = "extra_bitrate"
         const val EXTRA_FPS = "extra_fps"
         const val EXTRA_SCALE = "extra_scale"
+        const val EXTRA_SECRET_HEX = "extra_secret_hex"
     }
 
     private lateinit var prefs: MirrorPreferences
     private lateinit var host: String
-    private var port: Int = Protocol.DEFAULT_PORT
+    private var port: Int = ProtocolV2.DEFAULT_PORT
     private var bitrateBps: Int = 8_000_000
     private var fps: Int = 60
     private var resolutionScale: Float = 1.0f
@@ -61,12 +77,11 @@ class MirrorActivity :
     private lateinit var fabChevronIcon: ImageView
     private lateinit var touchController: TouchOverlayController
 
-    private var videoDecoder: VideoDecoder? = null
-    private var mirrorClient: MirrorClient? = null
+    private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var mediaSession: ClientMediaSession? = null
+    private var sessionStarted = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val frameCounter = AtomicInteger(0)
-    private var lastFpsSampleMs = 0L
 
     private var currentFps: Int = 0
     private var currentMbps: Float = 0f
@@ -107,11 +122,25 @@ class MirrorActivity :
         fabToggleBtn = findViewById(R.id.fabToggleBtn)
         fabChevronIcon = findViewById(R.id.fabChevronIcon)
 
+        val session = MirrorSessionFactory.create(
+            host = host,
+            port = port,
+            bitrateBps = bitrateBps,
+            fps = fps,
+            resolutionScale = resolutionScale,
+            secretHex = intent.getStringExtra(EXTRA_SECRET_HEX),
+            scope = activityScope,
+            onVideoSizeChanged = { w, h ->
+                runOnUiThread { touchController.updateVideoSize(w, h) }
+            }
+        )
+        mediaSession = session
+
         touchController = TouchOverlayController(
             container = mirrorRoot,
-            surfaceView = surfaceView
-        ) { action, pointerId, normX, normY ->
-            mirrorClient?.sendTouch(action, pointerId, normX, normY)
+            surfaceView = surfaceView,
+            touchPipeline = session.touchPipeline
+        ) {
             wakeHudFromIdle()
         }
 
@@ -120,6 +149,7 @@ class MirrorActivity :
         configureHudFromPrefs()
         configureFabFromPrefs()
         setupFabInteraction()
+        observeSession(session)
 
         mirrorRoot.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (prefs.fabEnabled) {
@@ -128,6 +158,79 @@ class MirrorActivity :
                     positionToolboxRelativeToFab()
                 }
             }
+        }
+    }
+
+    private fun observeSession(session: ClientMediaSession) {
+        activityScope.launch {
+            session.state.collect { state ->
+                when (state) {
+                    is SessionState.Streaming -> {
+                        isConnected = true
+                        state.bitrateBps?.let { bps ->
+                            val mbps = bps / 1_000_000f
+                            currentMbps = mbps
+                            TelemetryState.lastBitrateMbps = mbps
+                        }
+                        state.rttMs?.let { rtt ->
+                            val rttInt = rtt.toInt()
+                            currentPingMs = rttInt
+                            TelemetryState.lastPingMs = rttInt
+                        }
+                        renderHudText()
+                    }
+
+                    is SessionState.Paused,
+                    is SessionState.Reconnecting -> {
+                        isConnected = false
+                        renderHudText()
+                    }
+
+                    is SessionState.Failed -> {
+                        isConnected = false
+                        renderHudText()
+                        if (!isFinishing && !isDestroyed) {
+                            val msg = state.error.detail ?: state.error.code.name
+                            Log.e("MirrorActivity", "Session failed: ${state.error.code}")
+                            Toast.makeText(
+                                this@MirrorActivity,
+                                "Disconnected: $msg",
+                                Toast.LENGTH_LONG
+                            )
+                                .show()
+                            finish()
+                        }
+                    }
+
+                    else -> Unit
+                }
+            }
+        }
+        activityScope.launch {
+            session.metricsState.collect { snapshot ->
+                val measuredFps = snapshot.fps.toInt()
+                if (measuredFps > 0) {
+                    currentFps = measuredFps
+                    TelemetryState.lastFps = measuredFps
+                    renderHudText()
+                }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val session = mediaSession ?: return
+        if (session.state.value is SessionState.Paused) {
+            activityScope.launch { session.resume() }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val session = mediaSession ?: return
+        if (session.state.value is SessionState.Streaming) {
+            activityScope.launch { session.pause() }
         }
     }
 
@@ -208,7 +311,7 @@ class MirrorActivity :
             parts.add(host)
         }
         if (prefs.showPing) {
-            parts.add(if (currentPingMs > 0) "${currentPingMs}ms" else "--ms")
+            parts.add(if (currentPingMs >= 0) "${currentPingMs}ms" else "--ms")
         }
 
         hudBadge.text = if (parts.isEmpty()) "LIVE" else parts.joinToString(" • ")
@@ -250,10 +353,6 @@ class MirrorActivity :
         scheduleFabAutoFade()
     }
 
-    /**
-     * Positions the fixed-size 44dp fabToggleBtn strictly within screen margins.
-     * Because fabToggleBtn is decoupled from toolboxDock, expanding/collapsing never alters its layout.
-     */
     private fun applyFabPosition() {
         val rootW = mirrorRoot.width
         val rootH = mirrorRoot.height
@@ -299,10 +398,6 @@ class MirrorActivity :
         fabToggleBtn.y = targetY
     }
 
-    /**
-     * Positions toolboxDock cleanly above or below fabToggleBtn (auto-flipping near top edge)
-     * and clamps both X and Y strictly inside the visible screen bounds.
-     */
     private fun positionToolboxRelativeToFab() {
         val rootW = mirrorRoot.width
         val rootH = mirrorRoot.height
@@ -412,82 +507,23 @@ class MirrorActivity :
     }
 
     private fun executeToolboxAction(action: ToolboxAction) {
+        val session = mediaSession ?: return
         when (action) {
-            ToolboxAction.POWER -> mirrorClient?.sendKeyPress(KeyEvent.KEYCODE_POWER)
-            ToolboxAction.VOL_UP -> mirrorClient?.sendKeyPress(KeyEvent.KEYCODE_VOLUME_UP)
-            ToolboxAction.VOL_DOWN -> mirrorClient?.sendKeyPress(KeyEvent.KEYCODE_VOLUME_DOWN)
-            ToolboxAction.SHADE -> mirrorClient?.sendExpandNotifications()
-            ToolboxAction.ROTATE -> mirrorClient?.sendRotateScreen()
-            ToolboxAction.BACK -> mirrorClient?.sendKeyPress(KeyEvent.KEYCODE_BACK)
-            ToolboxAction.SCREENSHOT -> captureSurfaceScreenshot()
-        }
-    }
+            ToolboxAction.POWER -> session.sendKeyPress(KeyCodes.POWER)
 
-    private fun captureSurfaceScreenshot() {
-        val w = surfaceView.width
-        val h = surfaceView.height
-        if (w <= 0 || h <= 0 || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            Toast.makeText(this, "Screenshot unavailable", Toast.LENGTH_SHORT).show()
-            return
-        }
+            ToolboxAction.VOL_UP -> session.sendKeyPress(KeyCodes.VOLUME_UP)
 
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        try {
-            PixelCopy.request(surfaceView, bitmap, { copyResult ->
-                if (copyResult == PixelCopy.SUCCESS) {
-                    saveBitmapToGallery(bitmap)
-                } else {
-                    bitmap.recycle()
-                    runOnUiThread {
-                        Toast.makeText(
-                            this,
-                            "Capture failed (code $copyResult)",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            }, mainHandler)
-        } catch (t: Throwable) {
-            bitmap.recycle()
-            Toast.makeText(this, "Capture error: ${t.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
+            ToolboxAction.VOL_DOWN -> session.sendKeyPress(KeyCodes.VOLUME_DOWN)
 
-    private fun saveBitmapToGallery(bitmap: Bitmap) {
-        Thread {
-            try {
-                val filename = "VeloCast_${System.currentTimeMillis()}.png"
-                val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, filename)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(
-                            MediaStore.Images.Media.RELATIVE_PATH,
-                            "${Environment.DIRECTORY_PICTURES}/VeloCast"
-                        )
-                    }
-                }
-                val uri = contentResolver.insert(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    values
-                )
-                if (uri != null) {
-                    contentResolver.openOutputStream(uri)?.use { out ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                    }
-                    runOnUiThread {
-                        Toast.makeText(this, "Saved $filename", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.e("MirrorActivity", "Failed to save screenshot", t)
-                runOnUiThread {
-                    Toast.makeText(this, "Save failed: ${t.message}", Toast.LENGTH_SHORT).show()
-                }
-            } finally {
-                bitmap.recycle()
-            }
-        }.start()
+            ToolboxAction.SHADE -> session.sendDeviceAction(DeviceAction.EXPAND_SHADE)
+
+            ToolboxAction.ROTATE -> session.sendDeviceAction(DeviceAction.ROTATE)
+
+            ToolboxAction.BACK -> session.sendKeyPress(KeyCodes.BACK)
+
+            ToolboxAction.SCREENSHOT ->
+                MirrorScreenshotHelper.capture(this, surfaceView, mainHandler)
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -615,74 +651,13 @@ class MirrorActivity :
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.d("MirrorActivity", "surfaceCreated: surface=${holder.surface}")
-        val decoder = videoDecoder
-        if (decoder == null) {
+        val session = mediaSession ?: return
+        session.attachSurface(holder.surface)
+        if (!sessionStarted) {
+            sessionStarted = true
             isConnected = false
             renderHudText()
-            lastFpsSampleMs = System.currentTimeMillis()
-            frameCounter.set(0)
-
-            val newDecoder = VideoDecoder(
-                surface = holder.surface,
-                initialWidth = 1080,
-                initialHeight = 2400,
-                onVideoSizeChanged = { w, h ->
-                    runOnUiThread { touchController.updateVideoSize(w, h) }
-                },
-                onFrameRendered = {
-                    val count = frameCounter.incrementAndGet()
-                    val now = System.currentTimeMillis()
-                    val elapsed = now - lastFpsSampleMs
-                    if (elapsed >= 1000L) {
-                        val measuredFps = (count * 1000L / elapsed).toInt()
-                        frameCounter.set(0)
-                        lastFpsSampleMs = now
-                        currentFps = measuredFps
-                        TelemetryState.lastFps = measuredFps
-                        runOnUiThread { renderHudText() }
-                    }
-                }
-            )
-            newDecoder.start()
-            videoDecoder = newDecoder
-
-            val client = MirrorClient(
-                host = host,
-                port = port,
-                bitrateBps = bitrateBps,
-                fps = fps,
-                resolutionScale = resolutionScale,
-                decoder = newDecoder,
-                onConnected = {
-                    isConnected = true
-                    runOnUiThread { renderHudText() }
-                },
-                onDisconnected = { reason ->
-                    isConnected = false
-                    runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
-                            Log.e("MirrorActivity", "Disconnected: $reason")
-                            Toast.makeText(this, "Disconnected: $reason", Toast.LENGTH_LONG).show()
-                            finish()
-                        }
-                    }
-                },
-                onThroughputSample = { bytesPerSec ->
-                    val mbps = (bytesPerSec * 8f) / 1_000_000f
-                    currentMbps = mbps
-                    TelemetryState.lastBitrateMbps = mbps
-                    runOnUiThread { renderHudText() }
-                },
-                onPingMeasured = { rttMs ->
-                    currentPingMs = rttMs
-                    TelemetryState.lastPingMs = rttMs
-                    runOnUiThread { renderHudText() }
-                }
-            )
-            mirrorClient = client
-            client.connect()
-        } else {
-            decoder.setOutputSurface(holder.surface)
+            session.connect()
         }
     }
 
@@ -691,21 +666,16 @@ class MirrorActivity :
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        videoDecoder?.surfaceValid = false
+        mediaSession?.detachSurface()
     }
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(hudFadeRunnable)
         mainHandler.removeCallbacks(fabFadeRunnable)
-        stopSession()
+        mediaSession?.close()
+        mediaSession = null
+        activityScope.cancel()
         super.onDestroy()
-    }
-
-    private fun stopSession() {
-        mirrorClient?.disconnect()
-        mirrorClient = null
-        videoDecoder?.stop()
-        videoDecoder = null
     }
 
     private fun enableImmersiveFullscreen() {
@@ -714,5 +684,159 @@ class MirrorActivity :
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+}
+
+private object MirrorSessionFactory {
+    private const val SECRET_BYTES = 32
+    private const val HEX_RADIX = 16
+    private const val NIBBLE_BITS = 4
+
+    fun create(
+        host: String,
+        port: Int,
+        bitrateBps: Int,
+        fps: Int,
+        resolutionScale: Float,
+        secretHex: String?,
+        scope: CoroutineScope,
+        onVideoSizeChanged: (width: Int, height: Int) -> Unit
+    ): ClientMediaSession {
+        val authenticator = buildAuthenticator(secretHex)
+        val endpoint = ServerEndpoint(host = host, port = port, authenticator = authenticator)
+        val launcher = object : ServerLauncher {
+            override suspend fun start(onPhase: (LaunchPhase) -> Unit): ServerEndpoint {
+                onPhase(LaunchPhase.CONNECTING)
+                return endpoint
+            }
+
+            override suspend fun stop() = Unit
+        }
+        val streamConfig = StreamConfig(
+            bitrateBps = bitrateBps.coerceIn(
+                ProtocolV2.MIN_BITRATE_BPS,
+                ProtocolV2.MAX_BITRATE_BPS
+            ),
+            fps = fps.coerceIn(ProtocolV2.MIN_FPS, ProtocolV2.MAX_FPS),
+            scale = resolutionScale.coerceIn(ProtocolV2.MIN_SCALE, ProtocolV2.MAX_SCALE)
+        )
+        return ClientMediaSession(
+            serverLauncher = launcher,
+            scope = scope,
+            config = SessionConfig(initialStreamConfig = streamConfig),
+            onVideoSizeChanged = onVideoSizeChanged
+        )
+    }
+
+    private fun buildAuthenticator(secretHex: String?): HmacSha256Authenticator {
+        val secretBytes = decodeHexSecretOrNull(secretHex)
+            ?: ByteArray(SECRET_BYTES).also { SecureRandom().nextBytes(it) }
+        return try {
+            HmacSha256Authenticator(secretBytes)
+        } finally {
+            secretBytes.fill(0)
+        }
+    }
+
+    private fun decodeHexSecretOrNull(hex: String?): ByteArray? {
+        var result: ByteArray? = null
+        val evenHex = !hex.isNullOrBlank() && hex.length % 2 == 0
+        if (evenHex) {
+            val len = hex.length / 2
+            if (len >= HmacSha256Authenticator.MIN_SECRET_BYTES) {
+                val bytes = ByteArray(len)
+                var valid = true
+                for (i in 0 until len) {
+                    val hi = Character.digit(hex[i * 2], HEX_RADIX)
+                    val lo = Character.digit(hex[i * 2 + 1], HEX_RADIX)
+                    if (hi < 0 || lo < 0) {
+                        valid = false
+                        break
+                    }
+                    bytes[i] = ((hi shl NIBBLE_BITS) or lo).toByte()
+                }
+                if (valid) result = bytes else bytes.fill(0)
+            }
+        }
+        return result
+    }
+}
+
+private object MirrorScreenshotHelper {
+    private const val PNG_QUALITY = 100
+
+    fun capture(activity: AppCompatActivity, surfaceView: SurfaceView, mainHandler: Handler) {
+        val w = surfaceView.width
+        val h = surfaceView.height
+        if (w <= 0 || h <= 0 || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Toast.makeText(activity, "Screenshot unavailable", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            PixelCopy.request(surfaceView, bitmap, { copyResult ->
+                if (copyResult == PixelCopy.SUCCESS) {
+                    saveBitmapToGallery(activity, bitmap)
+                } else {
+                    bitmap.recycle()
+                    activity.runOnUiThread {
+                        Toast.makeText(
+                            activity,
+                            "Capture failed (code $copyResult)",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }, mainHandler)
+        } catch (t: IllegalArgumentException) {
+            bitmap.recycle()
+            Toast.makeText(activity, "Capture error: ${t.message}", Toast.LENGTH_SHORT).show()
+        } catch (t: IllegalStateException) {
+            bitmap.recycle()
+            Toast.makeText(activity, "Capture error: ${t.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun saveBitmapToGallery(activity: AppCompatActivity, bitmap: Bitmap) {
+        Thread {
+            try {
+                val filename = "VeloCast_${System.currentTimeMillis()}.png"
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            "${Environment.DIRECTORY_PICTURES}/VeloCast"
+                        )
+                    }
+                }
+                val uri = activity.contentResolver.insert(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    values
+                )
+                if (uri != null) {
+                    activity.contentResolver.openOutputStream(uri)?.use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)
+                    }
+                    activity.runOnUiThread {
+                        Toast.makeText(activity, "Saved $filename", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (t: java.io.IOException) {
+                Log.e("MirrorActivity", "Failed to save screenshot", t)
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Save failed: ${t.message}", Toast.LENGTH_SHORT).show()
+                }
+            } catch (t: SecurityException) {
+                Log.e("MirrorActivity", "Failed to save screenshot", t)
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Save failed: ${t.message}", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }.start()
     }
 }

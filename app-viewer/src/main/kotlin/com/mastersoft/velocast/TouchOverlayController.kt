@@ -6,25 +6,22 @@ import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.widget.FrameLayout
-import kotlin.math.min
+import com.mastersoft.velocast.client.TouchPipeline
+import com.mastersoft.velocast.client.ViewportMapper
 
 /**
- * Handles aspect-ratio scaling and letterbox offset calculation on the SurfaceView,
- * and translates single/multi-touch MotionEvents into normalized [0.0..1.0] coordinates.
+ * Coordinates letterbox layout on the mirror [SurfaceView] and routes raw Android [MotionEvent]s
+ * through [ViewportMapper] and [TouchPipeline].
  */
 class TouchOverlayController(
     private val container: FrameLayout,
     private val surfaceView: SurfaceView,
-    private val onTouchPacket: (action: Short, pointerId: Int, normX: Float, normY: Float) -> Unit
+    private val touchPipeline: TouchPipeline,
+    private val onTouchActivity: () -> Unit = {}
 ) : View.OnTouchListener {
 
-    private var videoWidth: Int = 1080
-    private var videoHeight: Int = 2400
-
-    private var renderedWidth: Float = 1f
-    private var renderedHeight: Float = 1f
-    private var letterboxOffsetX: Float = 0f
-    private var letterboxOffsetY: Float = 0f
+    private val viewportMapper: ViewportMapper
+        get() = touchPipeline.viewportMapper
 
     init {
         container.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
@@ -35,33 +32,22 @@ class TouchOverlayController(
 
     fun updateVideoSize(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
-        if (width != videoWidth || height != videoHeight) {
-            videoWidth = width
-            videoHeight = height
-            recomputeViewport()
-        }
+        viewportMapper.updateStreamDimensions(width, height)
+        recomputeViewport()
     }
 
     fun recomputeViewport() {
-        val containerW = container.width.toFloat()
-        val containerH = container.height.toFloat()
-        if (containerW <= 0f || containerH <= 0f) return
+        val containerW = container.width
+        val containerH = container.height
+        if (containerW <= 0 || containerH <= 0) return
 
-        val scale = min(containerW / videoWidth.toFloat(), containerH / videoHeight.toFloat())
-        renderedWidth = (videoWidth * scale).coerceAtLeast(1f)
-        renderedHeight = (videoHeight * scale).coerceAtLeast(1f)
-        letterboxOffsetX = (containerW - renderedWidth) * 0.5f
-        letterboxOffsetY = (containerH - renderedHeight) * 0.5f
+        val rect = viewportMapper.updateContainerSize(containerW, containerH)
+        val targetW = rect.width.toInt().coerceAtLeast(1)
+        val targetH = rect.height.toInt().coerceAtLeast(1)
 
         val params = surfaceView.layoutParams as? FrameLayout.LayoutParams
-            ?: FrameLayout.LayoutParams(
-                renderedWidth.toInt(),
-                renderedHeight.toInt(),
-                Gravity.CENTER
-            )
+            ?: FrameLayout.LayoutParams(targetW, targetH, Gravity.CENTER)
 
-        val targetW = renderedWidth.toInt().coerceAtLeast(1)
-        val targetH = renderedHeight.toInt().coerceAtLeast(1)
         if (params.width != targetW || params.height != targetH) {
             params.width = targetW
             params.height = targetH
@@ -72,79 +58,58 @@ class TouchOverlayController(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        val actionMasked = event.actionMasked
-
-        when (actionMasked) {
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val index = event.actionIndex
-                val x = event.getX(index)
-                val y = event.getY(index)
-                if (!isInsideVideoBounds(x, y)) return false
-                emitPointer(Protocol.ACTION_DOWN, event.getPointerId(index), x, y)
+                val accepted = touchPipeline.onRawDown(
+                    event.getPointerId(index),
+                    event.getX(index),
+                    event.getY(index)
+                )
+                if (!accepted) return false
+                onTouchActivity()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val index = event.actionIndex
-                val x = event.getX(index)
-                val y = event.getY(index)
-                if (isInsideVideoBounds(x, y)) {
-                    emitPointer(Protocol.ACTION_POINTER_DOWN, event.getPointerId(index), x, y)
+                if (touchPipeline.onRawDown(
+                        event.getPointerId(index),
+                        event.getX(index),
+                        event.getY(index)
+                    )
+                ) {
+                    onTouchActivity()
                 }
             }
 
             MotionEvent.ACTION_MOVE -> {
                 val pointerCount = event.pointerCount
                 for (i in 0 until pointerCount) {
-                    emitPointer(
-                        Protocol.ACTION_MOVE,
+                    touchPipeline.onRawMove(
                         event.getPointerId(i),
                         event.getX(i),
                         event.getY(i)
                     )
                 }
+                onTouchActivity()
             }
 
-            MotionEvent.ACTION_POINTER_UP -> {
-                val index = event.actionIndex
-                emitPointer(
-                    Protocol.ACTION_POINTER_UP,
-                    event.getPointerId(index),
-                    event.getX(index),
-                    event.getY(index)
-                )
-            }
-
+            MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_UP -> {
                 val index = event.actionIndex
-                emitPointer(
-                    Protocol.ACTION_UP,
+                touchPipeline.onRawUp(
                     event.getPointerId(index),
                     event.getX(index),
                     event.getY(index)
                 )
+                onTouchActivity()
             }
 
             MotionEvent.ACTION_CANCEL -> {
-                val index = event.actionIndex
-                emitPointer(
-                    Protocol.ACTION_CANCEL,
-                    event.getPointerId(index),
-                    event.getX(index),
-                    event.getY(index)
-                )
+                touchPipeline.cancelAllPointers()
+                onTouchActivity()
             }
         }
         return true
-    }
-
-    private fun isInsideVideoBounds(x: Float, y: Float): Boolean = x >= letterboxOffsetX &&
-        x <= letterboxOffsetX + renderedWidth &&
-        y >= letterboxOffsetY &&
-        y <= letterboxOffsetY + renderedHeight
-
-    private fun emitPointer(action: Short, pointerId: Int, rawX: Float, rawY: Float) {
-        val normX = ((rawX - letterboxOffsetX) / renderedWidth).coerceIn(0f, 1f)
-        val normY = ((rawY - letterboxOffsetY) / renderedHeight).coerceIn(0f, 1f)
-        onTouchPacket(action, pointerId, normX, normY)
     }
 }

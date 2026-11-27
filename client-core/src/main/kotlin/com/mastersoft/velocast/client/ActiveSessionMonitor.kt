@@ -73,7 +73,7 @@ internal class ActiveSessionMonitor(
             if (pendingPings.size >= MAX_PENDING_PINGS) {
                 pendingPings.clear()
             }
-            pendingPings[token] = clock.monotonicMillis()
+            pendingPings[token] = clock.monotonicMicros()
             transport.writeControl(ControlCommand.Ping(token))
         }
     }
@@ -107,12 +107,12 @@ internal class ActiveSessionMonitor(
 
     private fun handleInboundFrame(frame: ReceivedFrame): SessionEndReason? = when (frame.type) {
         MessageType.PONG -> {
-            handlePong(Pong.decode(frame.payload, 0, frame.payload.size))
+            handlePong(Pong.decode(frame.payload, 0, frame.payloadLength))
             null
         }
 
         MessageType.DEVICE_INFO -> {
-            val info = DeviceInfo.decode(frame.payload, 0, frame.payload.size)
+            val info = DeviceInfo.decode(frame.payload, 0, frame.payloadLength)
             frameConsumer.onDeviceInfo(info)
             stateHolder.updateStreaming { it.copy(deviceInfo = info) }
             stateHolder.updatePaused { it.copy(deviceInfo = info) }
@@ -120,7 +120,7 @@ internal class ActiveSessionMonitor(
         }
 
         MessageType.VIDEO_SIZE -> {
-            val size = VideoSize.decode(frame.payload, 0, frame.payload.size)
+            val size = VideoSize.decode(frame.payload, 0, frame.payloadLength)
             frameConsumer.onVideoSize(size)
             stateHolder.updateStreaming { it.copy(videoSize = size) }
             stateHolder.updatePaused { it.copy(videoSize = size) }
@@ -128,7 +128,7 @@ internal class ActiveSessionMonitor(
         }
 
         MessageType.CONFIG -> {
-            val codecConfig = CodecConfig.decode(frame.payload, 0, frame.payload.size)
+            val codecConfig = CodecConfig.decode(frame.payload, 0, frame.payloadLength)
             frameConsumer.onCodecConfig(codecConfig, frame.flags)
             null
         }
@@ -139,22 +139,22 @@ internal class ActiveSessionMonitor(
         }
 
         MessageType.STATUS -> {
-            handleStatus(Status.decode(frame.payload, 0, frame.payload.size))
+            handleStatus(Status.decode(frame.payload, 0, frame.payloadLength))
             null
         }
 
         MessageType.CLIPBOARD -> {
             frameConsumer.onClipboard(
-                ClipboardMessage.decode(frame.payload, 0, frame.payload.size)
+                ClipboardMessage.decode(frame.payload, 0, frame.payloadLength)
             )
             null
         }
 
         MessageType.ERROR -> handleErrorFrame(
-            ErrorMessage.decode(frame.payload, 0, frame.payload.size)
+            ErrorMessage.decode(frame.payload, 0, frame.payloadLength)
         )
 
-        MessageType.BYE -> handleByeFrame(Bye.decode(frame.payload, 0, frame.payload.size))
+        MessageType.BYE -> handleByeFrame(Bye.decode(frame.payload, 0, frame.payloadLength))
 
         else -> throw ProtocolException(
             ErrorCode.UNEXPECTED_MESSAGE,
@@ -163,11 +163,14 @@ internal class ActiveSessionMonitor(
     }
 
     private fun handlePong(pong: Pong) {
-        val sentAt = pendingPings.remove(pong.token)
-        val receivedAt = clock.monotonicMillis()
-        frameConsumer.onPong(pong, sentAt, receivedAt)
-        if (sentAt != null) {
-            val rtt = (receivedAt - sentAt).coerceAtLeast(0L)
+        val sentAtUs = pendingPings.remove(pong.token)
+        val receivedAtUs = clock.monotonicMicros()
+        val sentAtMs = sentAtUs?.let { it / MICROS_PER_MILLI }
+        val receivedAtMs = receivedAtUs / MICROS_PER_MILLI
+        frameConsumer.onPong(pong, sentAtMs, receivedAtMs)
+        frameConsumer.onPongMicros(pong, sentAtUs, receivedAtUs)
+        if (sentAtUs != null) {
+            val rtt = ((receivedAtUs - sentAtUs) / MICROS_PER_MILLI).coerceAtLeast(0L)
             stateHolder.updateStreaming { it.copy(rttMs = rtt) }
         }
     }
@@ -220,5 +223,6 @@ internal class ActiveSessionMonitor(
 
     private companion object {
         const val MAX_PENDING_PINGS = 16
+        const val MICROS_PER_MILLI = 1_000L
     }
 }
