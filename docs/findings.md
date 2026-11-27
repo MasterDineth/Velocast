@@ -358,3 +358,44 @@ Where: `repository root`
 There is no LICENSE, protocol specification, troubleshooting guide or contribution guide.
 
 Recommendation: Add LICENSE (needed before sharing), docs/protocol.md, docs/troubleshooting.md.
+
+---
+
+## Findings traceability (`S00`–`S05B`)
+
+| Finding | Status | Evidence / Where closed |
+| --- | --- | --- |
+| `SEC-01` | Partial (`S02`, `S03A`; AEAD in `S06`) | Mandatory `HELLO`/`SERVER_HELLO`/`AUTH_PROOF` handshake before any session frame or input (`SessionGuard`, `ServerSession`, `SessionGuardTest`). |
+| `SEC-03` | Closed (`S03A`) | `SessionGuard` authenticates new peers before pre-empting an active session and applies per-IP exponential back-off (`SessionGuardTest`). |
+| `SEC-04` | Evidence proven (`S05A`, `S05B`); launcher cutover in `S07`/`S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities on Android 16 (`M2101K6G`) and Android 17 HyperOS (`25019PNF3C`); documented in [spike-shell-user.md](spike-shell-user.md). |
+| `SEC-05` | Closed (`S02`, `S03A`) | Strict `KeyCodes` allow-list, pointer ID `0..31`, finite `[0, 1]` coordinates, and `PointerStateTracker` enforced in `:protocol` and `InputInjector` (`ValidatorsTest`, `ServerSessionValidationTest`). |
+| `SEC-06` | Partial (`S03A`; root launcher in `S10`) | Removed hardcoded `/data/local/tmp` state/log paths from `:server-core`; `--state-dir` is explicit (`ServerArgsAndMainTest`). |
+| `SEC-09` | Closed (`S00`) | `.gitignore` added, tracked IDE/build state removed, default LAN IP removed. |
+| `FUN-01` | Closed (`S03B`) | `RotationWatcherShim` + `RotationStateMachine` rebuild capture/encoder on rotation, emit `VIDEO_SIZE` (`RESET`) + `CONFIG` + IDR, and update `InputInjector` dimensions (`RotationStateMachineTest`). |
+| `FUN-02` | Closed (`S02`, `S03B`, `S04B`) | `KEYFRAME_REQ` wired end-to-end; `VideoFrameQueue` drops oldest and waits for IDR (`VideoFrameQueueTest`, `VideoDecoderInstrumentedTest`). |
+| `FUN-03` | Closed (`S04A`) | 2 s `PING`/`PONG` heartbeats, 5 s socket `soTimeout`, and 6 s silence watchdog (`SessionEngineLivenessAndReconnectTest`). |
+| `FUN-04` | Closed (`S04B`) | `VideoDecoder` sets `KEY_MAX_WIDTH`/`KEY_MAX_HEIGHT` and recreates cleanly on `CONFIG` geometry changes (`VideoDecoderTest`). |
+| `FUN-05` | Closed (`S03A`, `S04B`) | Reliable `DOWN`/`UP`/`CANCEL` delivery with `MOVE` coalescing in `TouchPipeline` and strict server `PointerStateTracker` + teardown cancel (`TouchPipelineTest`, `TouchStateMachineTest`). |
+| `FUN-06` | Closed (`S03B`, hardened in `S05B`) | `AndroidDeviceStateController` + out-of-process `setsid` `CleanUp` snapshot and restore rotation lock and display power using `FakeContext` caller identity (`StateRestoreAndCleanUpTest`). |
+| `FUN-07` | Server & capability layer closed (`S03B`, `S05B`; viewer UI in `S11`) | `DisplayPowerShim` controls panel power while capture continues (including Android 14+ `DisplayControl` via `ClassLoaderFactory` + `libandroid_servers.so`), verified as `uid 2000` on Android 16 & 17. |
+| `FUN-08` | Engine closed (`S04A`, `S04B`; Compose UI in `S13`) | `PAUSE`/`RESUME` stops encoding on background and resumes with an IDR frame (`SessionEnginePauseResumeAndCancellationTest`). |
+| `FUN-09` | Engine closed (`S04A`; Compose UI in `S13`) | `SessionEngine` reconnects with exponential back-off for up to 10 minutes (`SessionEngineLivenessAndReconnectTest`). |
+| `PERF-01` | Closed (`S03B`) | Bounded 3-frame latest-wins `FrameQueue`, priority control lane for `PONG`/`STATUS`/`ERROR`, `TCP_NODELAY`, and 64 KB `SO_SNDBUF` (`FrameQueueTest`, `SendPathStallAndPriorityTest`). |
+| `PERF-02` | Closed (`S04B`) | Capacity-6 `DROP_OLDEST` `VideoFrameQueue` with `< 50 ms` measured recovery after 1 s stall (`VideoDecoderInstrumentedTest`). |
+| `PERF-03` | Closed (`S03A`, `S04B`) | Zero-allocation touch arrays in `InputInjector` and `FrameBufferPool` / `ControlPacketPool` in `:client-core` (`TouchStateMachineTest`, `FrameBufferPoolAndZeroAllocTest`). |
+| `PERF-04` | Closed (`S03B`) | Explicit `CBR`/`VBR`, `KEY_MAX_B_FRAMES = 0`, constrained baseline profile, and sync-frame headers (`EncoderSettingsAndNalTest`). |
+| `PERF-07` | Closed (`S04B`) | Asynchronous `MediaCodec.Callback` decoder with dedicated render thread (`VideoDecoderTest`). |
+| `PERF-08` | Plumbing closed (`S02`, `S03B`, `S04B`; camera benchmark in `S15`) | Monotonic `captureUs` + min-RTT `PING`/`PONG` clock offset + per-stage `SessionMetrics` (`SessionMetricsTest`). |
+| `PERF-09` | Closed (`S03B`) | Long GOP paired with on-demand `PARAMETER_KEY_REQUEST_SYNC_FRAME` (`EncoderSettingsAndNalTest`). |
+| `CQ-02` | Closed (`S02`) | Shared pure-JVM `:protocol` module with golden vectors and 1M+ fuzz inputs (`GoldenVectorTest`, `FuzzTest`). |
+| `CQ-03` | Closed for `:server-core` (`S05A`, `S05B`); emulator/lab matrix in `S07`/`S16` | Hidden APIs isolated in `server-core/.../platform/` (`PlatformApiPolicy`, `FakeContext`, `DisplayPowerShim`, `ClipboardShim`, `VirtualDisplayBridge`, `BinderInjectorSink`, `RotationWatcherShim`), verified by `CapabilityProbe` and reported to the viewer via `STATUS` ([spike-shell-user.md](spike-shell-user.md)). |
+| `CQ-04` | Closed in `:server-core` & `:client-core` (`S03A`, `S04A`, `S04B`) | Single-owner `ServerSession` and coroutine-confined `SessionEngine` `StateFlow`. |
+| `CQ-06` | Closed (`S02`, `S03A`, `S03B`, `S05B`) | Structured `Logger`, typed `ERROR`/`STATUS` frames (`INJECTION_DENIED`, `SERVER_START_FAILED`, `StatusKind.DEGRADED`), and viewer `SessionState.Streaming` capability tracking. |
+| `CQ-07` | Closed (`S00`, `S03A`, `S05B`) | Deleted `magisk/mirror.sh`, legacy `SurfaceControl` display capture fallback, and raw `service call statusbar` transaction numbers. |
+| `CQ-10` | Closed (`S01`, `S05A`) | Lean `:server-core` module assembled as standalone `velocast-server.jar` (`:server-core:assembleDexJar`) with zero UI dependencies (`verifyModuleDependencies`). |
+| `BLD-01` | Closed (`S00`) | Build outputs and IDE files untracked and guarded by `.gitignore`. |
+| `BLD-02` | Partial (`S01`; release Play checks in `S17`) | `compileSdk` and `targetSdk` raised to `36` across modules. |
+| `BLD-04` | Closed (`S01`) | Centralized `gradle/libs.versions.toml` and non-deprecated Gradle DSL. |
+| `BLD-05` | Closed (`S01`) | Toolchain pinned and documented in CI and Gradle config. |
+| `DOC-01` | Partial (`S00`, `S02`, `S05B`; final audit in `S17`) | `README.md`, `docs/protocol.md`, `docs/architecture.md`, and `docs/spike-shell-user.md` match code constants and behaviour. |
+| `DOC-02` | Partial (`S00`, `S02`, `S05B`; troubleshooting guide in `S17`) | Added `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, `docs/protocol.md`, and `docs/spike-shell-user.md`. |

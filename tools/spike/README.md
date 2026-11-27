@@ -35,13 +35,14 @@ The script:
 4. Pulls the JSON-lines output to `tools/spike/results/<model>-android<api>.json`.
 5. Prints a summary table in the terminal.
 
-## Owner Results Table Template
+## Recorded Results & Owner Template
 
-Paste your recorded device runs below (and commit the `tools/spike/results/*.json` files) before running step **S05B**:
+Full analysis, per-API-level shim decisions, and session verification live in [`docs/spike-shell-user.md`](../../docs/spike-shell-user.md).
 
 | Device / Model | ROM | Android / API | `virtual_display` | `input_injection` | `notification_shade` | `rotation` | `display_power` | `wake` | `clipboard` | Notes (e.g. OEM toggles) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `<model>` | `<stock / MIUI / OneUI / etc.>` | `<e.g. 11 (API 30)>` | `<supported / denied / unsupported>` | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | `<...>` | `<notes>` |
-| `<model>` | `<ROM>` | `<e.g. 13 (API 33)>` | | | | | | | | |
-| `<model>` | `<ROM>` | `<e.g. 14 (API 34)>` | | | | | | | | |
-| `<model>` | `<ROM>` | `<e.g. 16 (API 36)>` | | | | | | | | |
+| `<model>` | `<AOSP / Stock>` | `11 (API 30)` | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | Covered by `PlatformApiPolicy` unit tests |
+| `<model>` | `<AOSP / Stock>` | `13 (API 33)` | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | Covered by `PlatformApiPolicy` unit tests |
+| `<model>` | `<AOSP / One UI>` | `14 (API 34)` | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | *Confirm on device* | Covered by `PlatformApiPolicy` unit tests |
+| `Xiaomi M2101K6G` (Redmi Note 10 Pro) | Custom AOSP (`BP4A.251205.006`) | `16 (API 36)` | `supported` | `supported` | `supported` | `supported` | `supported` | `supported` | `supported` | Reference old phone; full shell session verified (`6f8d1516`) |
+| `Xiaomi 25019PNF3C` (Xiaomi 15 Ultra) | Xiaomi HyperOS `V816` (`CP2A.260605.016`) | `17 (API 37)` | `supported` | `supported` | `supported` | `supported` | `supported` | `supported` | `supported` | `persist.security.adbinput=1` (*USB debugging (Security settings)* enabled); full shell session verified (`fba5cfe8`) |
