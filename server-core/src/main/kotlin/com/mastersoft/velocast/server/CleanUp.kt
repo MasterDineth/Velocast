@@ -3,6 +3,7 @@ package com.mastersoft.velocast.server
 import com.mastersoft.velocast.protocol.ProtocolV2
 import com.mastersoft.velocast.server.platform.AndroidDeviceStateController
 import com.mastersoft.velocast.server.platform.SavedDeviceState
+import com.mastersoft.velocast.server.platform.VirtualDisplayBridge
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
@@ -150,9 +151,9 @@ object CleanUp {
         restoreDisplayPower: Boolean,
         logger: Logger
     ) {
-        val controller = AndroidDeviceStateController(logger)
+        VirtualDisplayBridge.bypassHiddenApis(logger)
         if (restoreDisplayPower) {
-            controller.restoreState(state)
+            AndroidDeviceStateController(logger).restoreState(state)
         } else {
             AndroidDeviceStateController.restoreRotationState(
                 state.accelerometerRotation,
