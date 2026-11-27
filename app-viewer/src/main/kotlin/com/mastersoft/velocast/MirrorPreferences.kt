@@ -2,6 +2,7 @@ package com.mastersoft.velocast
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.mastersoft.velocast.protocol.ProtocolV2
 
 enum class HudAlignment(val key: String) {
     LEFT("left"),
@@ -132,11 +133,11 @@ class MirrorPreferences(context: Context) {
         context.applicationContext.getSharedPreferences("velocast_prefs", Context.MODE_PRIVATE)
 
     var hostIp: String
-        get() = prefs.getString("host_ip", Protocol.DEFAULT_HOST) ?: Protocol.DEFAULT_HOST
+        get() = prefs.getString("host_ip", DEFAULT_HOST) ?: DEFAULT_HOST
         set(v) = prefs.edit().putString("host_ip", v).apply()
 
     var port: Int
-        get() = prefs.getInt("port", Protocol.DEFAULT_PORT)
+        get() = prefs.getInt("port", ProtocolV2.DEFAULT_PORT)
         set(v) = prefs.edit().putInt("port", v).apply()
 
     var bitrateIdx: Int
@@ -273,5 +274,9 @@ class MirrorPreferences(context: Context) {
             .putInt("bitrate_idx", savedBitrate)
             .putInt("fps_idx", savedFps)
             .apply()
+    }
+
+    private companion object {
+        const val DEFAULT_HOST = ""
     }
 }

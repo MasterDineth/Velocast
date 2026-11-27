@@ -19,11 +19,12 @@ Android-to-Android screen mirroring and remote control suite written in Kotlin f
   - Rotation & size tracking (`IWindowManager.watchRotation` + `500 ms` `VirtualDisplayBridge` polling) rebuilding capture/encoder with `VIDEO_SIZE` -> `CONFIG` -> `IDR` ordering and atomic `InputInjector` updates; session-start capture & teardown restore of rotation lock and display power plus out-of-process `setsid` `com.mastersoft.velocast.server.CleanUp` guardian; non-fatal `INJECTION_DENIED` reporting.
   - 20 s server-side socket read watchdog (`DEFAULT_SESSION_IDLE_TIMEOUT_MS = 20_000L`) to clean up dropped sessions while keeping the acceptor open.
   - Binder IPC via reflection (`BinderInjectorSink`) for expanding/collapsing the notification shade (`IStatusBarService`, with `cmd` fallback) and toggling rotation (`IWindowManager`, with `settings` fallback).
-- **`:client-core`**, **`:launcher-adb`**, **`:launcher-shizuku`**, **`:launcher-root`**, **`:designsystem`** — Modular libraries scaffolded for S04–S12.
+- **`:client-core`** — Android library (`minSdk` 26, `compileSdk` 36) containing `SessionEngine`, reusable protocol v2 `MirrorClient` transport, `FrameBufferPool` / `ControlPacketPool` rings, capacity-6 `DROP_OLDEST` `VideoFrameQueue` with `waitForKeyframe` + `KEYFRAME_REQ`, asynchronous `MediaCodec` `VideoDecoder` (`KEY_MAX_WIDTH`/`KEY_MAX_HEIGHT`, `CONFIG` recreation, `CodecException` recovery, dedicated render thread), `TouchPipeline` / `ViewportMapper`, and `SessionMetrics` (`StateFlow` + `DiagnosticsRingBuffer`).
+- **`:launcher-adb`**, **`:launcher-shizuku`**, **`:launcher-root`**, **`:designsystem`** — Modular libraries scaffolded for S07–S12.
 - **`:app-host` (`com.mastersoft.velocast.host`, VeloCast Host)** — Installable Android app (`minSdk` 30, `targetSdk` 36, `compileSdk` 36):
   - Requests Magisk root access (`su -c`) from the app, displays the host Wi-Fi IP and port, toggles **Start / Stop Server**, tails server logs (`/data/adb/velocast/server.log`), and manages **Auto-Start on Boot (Magisk)** (`/data/adb/service.d/velocast.sh`, resolving the APK path via `pm path`).
 - **`:app-viewer` (`com.mastersoft.velocast`, VeloCast)** — Non-rooted Android viewer app (`minSdk` 26, `targetSdk` 36, `compileSdk` 36):
-  - Coroutines TCP client (`MirrorClient`) with `TCP_NODELAY`, a bounded 24-slot `Channel` (`incomingNalQueue`), and `MediaCodec` hardware decoding (`VideoDecoder`, setting `KEY_LOW_LATENCY = 1` on API 30+).
+  - Wired to `:client-core` (`ClientMediaSession`, protocol v2 async `VideoDecoder`, capacity-6 `DROP_OLDEST` queue, `TouchPipeline`).
   - Real-time stats HUD, draggable Floating Quick Toolbox (FAB) with 7 actions (`POWER`, `VOL_UP`, `VOL_DOWN`, `SHADE`, `ROTATE`, `BACK`, `SCREENSHOT`), and Mirror Settings.
 
 ## Quick Setup

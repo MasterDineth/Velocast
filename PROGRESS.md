@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S04A — `:client-core` session engine, liveness, backoff reconnect, typed errors, pause/resume, and `MirrorClient` transport (complete on `step/S04a-session`).
+S04B — `:client-core` asynchronous `VideoDecoder`, `DROP_OLDEST` frame queue, buffer pools, touch pipeline, stage metrics, and `:app-viewer` v2 wiring (complete on `step/S04b-decoder`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -25,9 +25,18 @@ S04A — `:client-core` session engine, liveness, backoff reconnect, typed error
   - Implemented `pause()` (`PAUSE` + surface release) and `resume()` (`RESUME` + `KEYFRAME_REQ`, or rediscovery if link died while paused).
   - Implemented reusable `MirrorClient` (`MirrorClient.kt`) as a `StreamTransport` with dedicated reader/writer coroutines, handshake-to-session phase gating, and structured cancellation.
   - Added unit tests (`SessionErrorTest`, `SessionEngineTransitionsTest`, `SessionEngineLivenessAndReconnectTest`, `SessionEnginePauseResumeAndCancellationTest`, `MirrorClientTest`).
+- S04B — `:client-core` media pipeline, touch, metrics & `:app-viewer` v2 wiring (complete on `step/S04b-decoder`, closing `FUN-02`, `FUN-04`, `FUN-05`, `PERF-02`, `PERF-03`, `PERF-07`, `PERF-08`):
+  - Added `FrameBufferPool` and `ControlPacketPool` (`FrameBufferPool.kt`, `ControlPacketPool.kt`) wired into `MirrorClient`, `StreamTransport`, and `ActiveSessionMonitor` for zero-allocation hot-path `VIDEO` reads and `ControlPacket` writes.
+  - Added capacity-6 `BufferOverflow.DROP_OLDEST` `VideoFrameQueue` (`VideoFrameQueue.kt`) that sets `waitForKeyframe`, emits `KEYFRAME_REQ`, and skips non-key frames until the next `FrameFlags.KEYFRAME`.
+  - Replaced synchronous `MediaCodec` polling with asynchronous `MediaCodec.Callback` decoding (`VideoDecoder.kt`, `H264SpsParser.kt`), bounded input queue (capacity `4`), dedicated `"velocast-decoder-render"` render thread, `KEY_MAX_WIDTH`/`KEY_MAX_HEIGHT` adaptive playback, `CONFIG`-size recreation, and `CodecException` recovery (`isTransient` flush, `isRecoverable` reset, else recreate + `KEYFRAME_REQ` / loud `DecoderState.Failed` escalation).
+  - Added `ViewportMapper` and `TouchPipeline` (`ViewportMapper.kt`, `TouchPipeline.kt`) with reliable ordered delivery for `DOWN`/`UP`/`CANCEL`, per-pointer `MOVE` coalescing, pause/disconnect pointer cancellation (`SessionLifecycleHooks`), and centered letterbox coordinate mapping driven by `VIDEO_SIZE`.
+  - Added `SessionMetrics` (`SessionMetrics.kt`) computing per-frame `receiveQueueUs`, `decodeUs`, `renderUs`, `captureToReceiveUs`, `endToEndUs`, rolling p50/p95 stats, and min-RTT `PING`/`PONG` clock offset via `StateFlow` plus `DiagnosticsRingBuffer`, and wired `ClientMediaSession` into `:app-viewer` (`MirrorActivity.kt`, `TouchOverlayController.kt`, `MirrorPreferences.kt`), removing legacy v1 client/decoder/protocol classes.
+  - Added unit & recorded-H.264 tests (`FrameBufferPoolAndZeroAllocTest`, `VideoFrameQueueTest`, `VideoDecoderTest`, `TouchPipelineTest`, `SessionMetricsTest`, `ViewerTouchWiringTest`) plus `VideoDecoderInstrumentedTest` verified on two physical Android devices after an induced 1-second consumer stall:
+    - Host `6f8d1516` (`M2101K6G`, Android 16): `preMedianUs=10862`, `postMedianUs=10505`, `recoveryMs=31`, `maxQueueDepth=6`, `dropped=50`, `skipped=0`, `keyframeReqs=52`, `rendered=104`.
+    - Client `fba5cfe8` (`25019PNF3C`, Android 17): `preMedianUs=2980`, `postMedianUs=3374`, `recoveryMs=5`, `maxQueueDepth=6`, `dropped=47`, `skipped=0`, `keyframeReqs=47`, `rendered=107`.
 
 ## Next
-- S04B — `:client-core` asynchronous `VideoDecoder`, `DROP_OLDEST` frame queue, buffer pools, touch pipeline, and stage latency metrics.
+- Next step per `docs/steps.md` (viewer UX/diagnostics & launchers).
 
 ## Open questions
 - None.
