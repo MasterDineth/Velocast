@@ -22,5 +22,9 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":protocol"))
+    api(project(":protocol"))
+    api(libs.kotlinx.coroutines.core)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(testFixtures(project(":protocol")))
 }
