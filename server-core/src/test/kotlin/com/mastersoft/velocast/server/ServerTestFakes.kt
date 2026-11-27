@@ -15,6 +15,7 @@ import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.ProtocolV2
 import com.mastersoft.velocast.protocol.Status
 import com.mastersoft.velocast.protocol.StatusKind
+import com.mastersoft.velocast.server.platform.ClipboardBackend
 import com.mastersoft.velocast.server.platform.DeviceStateController
 import com.mastersoft.velocast.server.platform.SavedDeviceState
 import com.mastersoft.velocast.server.platform.ServerCapabilities
@@ -366,10 +367,12 @@ class FakeSessionEnvironment(
     val createdPipelines = CopyOnWriteArrayList<FakeMediaPipeline>()
     val createdInjectors = CopyOnWriteArrayList<InputInjector>()
     val createdControllers = CopyOnWriteArrayList<FakeDeviceStateController>()
+    val createdClipboards = CopyOnWriteArrayList<FakeClipboardBackend>()
     val createdGuardians = CopyOnWriteArrayList<FakeCleanUpGuardian>()
     var initialDisplayPowerOn: Boolean = true
     var displayPowerSupported: Boolean = false
     var rotationWatcherSupported: Boolean = false
+    var clipboardSupported: Boolean = true
     var simulatedRotationCallback: (() -> Unit)? = null
 
     val sampleDeviceInfo = DeviceInfo(
@@ -412,6 +415,9 @@ class FakeSessionEnvironment(
         displayPowerSupported = displayPowerSupported
     ).also { createdControllers.add(it) }
 
+    override fun createClipboardBackend(): ClipboardBackend =
+        FakeClipboardBackend(clipboardSupported).also { createdClipboards.add(it) }
+
     override fun startCleanUpGuardian(
         state: SavedDeviceState,
         restoreDisplayPower: Boolean
@@ -429,11 +435,28 @@ class FakeSessionEnvironment(
         injector: InputInjector,
         hasRotationWatcher: Boolean
     ): ServerCapabilities = ServerCapabilities(
+        inputInjection = injector.hasInputInjection,
         rotationWatcher = hasRotationWatcher,
         displayPowerControl = displayPowerSupported,
         notificationShade = injector.hasNotificationShade,
-        wake = injector.hasWakeKeyInjection
+        wake = injector.hasWakeKeyInjection,
+        clipboard = clipboardSupported
     )
+}
+
+class FakeClipboardBackend(override val isSupported: Boolean = true) : ClipboardBackend {
+    var currentText: String? = null
+    val writtenTexts = CopyOnWriteArrayList<String>()
+    var allowSet: Boolean = true
+
+    override fun getText(): String? = if (isSupported) currentText else null
+
+    override fun setText(text: String): Boolean {
+        if (!isSupported || !allowSet) return false
+        currentText = text
+        writtenTexts.add(text)
+        return true
+    }
 }
 
 class FakeDeviceStateController(
@@ -523,10 +546,12 @@ internal object TestClientDriver {
             "Expected initial DISPLAY_POWER status, got ${initialStatus.kind}"
         }
         val detail = initialStatus.detail
+        if (detail.contains("input_injection=0")) drainDegraded(fr, h)
         if (detail.contains("rotation_watcher=0")) drainDegraded(fr, h)
         if (detail.contains("display_power=0")) drainDegraded(fr, h)
         if (detail.contains("notification_shade=0")) drainDegraded(fr, h)
         if (detail.contains("wake=0")) drainDegraded(fr, h)
+        if (detail.contains("clipboard=0")) drainDegraded(fr, h)
     }
 
     private fun drainDegraded(fr: FrameReader, h: FrameHeader) {

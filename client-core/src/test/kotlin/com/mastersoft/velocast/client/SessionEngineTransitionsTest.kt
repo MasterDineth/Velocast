@@ -205,6 +205,45 @@ class SessionEngineTransitionsTest {
     }
 
     @Test
+    fun `status frames populate serverCapabilities and degradedCapabilities`() = runTest {
+        val clock = TestSchedulerClock(testScheduler)
+        val launcher = FakeServerLauncher(emitPhases = false)
+        val transport = FakeStreamTransport()
+        val engine = SessionEngine(launcher, transport, this, clock = clock)
+
+        engine.connect()
+        runCurrent()
+
+        transport.enqueuePayload(
+            Status(
+                StatusKind.DISPLAY_POWER,
+                1,
+                "input_injection=1,rotation_watcher=1,display_power=0," +
+                    "notification_shade=1,wake=1,clipboard=1"
+            )
+        )
+        transport.enqueuePayload(Status(StatusKind.DEGRADED, 3, "display_power"))
+        transport.enqueuePayload(Status(StatusKind.DEGRADED, 0, "input_injection"))
+        runCurrent()
+
+        val streaming = engine.state.value as SessionState.Streaming
+        assertEquals(
+            mapOf(
+                "input_injection" to false,
+                "rotation_watcher" to true,
+                "display_power" to false,
+                "notification_shade" to true,
+                "wake" to true,
+                "clipboard" to true
+            ),
+            streaming.serverCapabilities
+        )
+        assertEquals(setOf("display_power", "input_injection"), streaming.degradedCapabilities)
+
+        engine.disconnect()
+    }
+
+    @Test
     fun `fatal ERROR frames map all catalogue errors to Failed`() = runTest {
         val codes = listOf(
             ErrorCode.DEBUGGING_OFF to SessionError.DebuggingOff("d"),

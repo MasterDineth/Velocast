@@ -1,5 +1,6 @@
 package com.mastersoft.velocast.server.platform
 
+import android.os.Build
 import android.os.IBinder
 import com.mastersoft.velocast.protocol.ProtocolV2
 import com.mastersoft.velocast.protocol.Status
@@ -22,43 +23,57 @@ data class SavedDeviceState(
 )
 
 /**
- * Runtime capability probe results reported in `STATUS` after session authentication.
+ * Runtime capability probe results reported to the viewer via `STATUS` after session authentication
+ * and advertised as feature bits in `SERVER_HELLO` (CQ-03, SEC-04).
  */
 data class ServerCapabilities(
+    val inputInjection: Boolean = true,
     val rotationWatcher: Boolean,
     val displayPowerControl: Boolean,
     val notificationShade: Boolean,
-    val wake: Boolean
+    val wake: Boolean,
+    val clipboard: Boolean = true
 ) {
     fun toFeatureMask(): Int {
         var mask = FEATURE_ROTATION_EVENTS
         if (displayPowerControl) {
             mask = mask or FEATURE_DISPLAY_POWER
         }
+        if (clipboard) {
+            mask = mask or FEATURE_CLIPBOARD
+        }
         return mask
     }
 
     fun toStatusDetail(): String {
-        val raw = "rotation_watcher=${bit(rotationWatcher)}," +
+        val raw = "input_injection=${bit(inputInjection)}," +
+            "rotation_watcher=${bit(rotationWatcher)}," +
             "display_power=${bit(displayPowerControl)}," +
             "notification_shade=${bit(notificationShade)}," +
-            "wake=${bit(wake)}"
+            "wake=${bit(wake)}," +
+            "clipboard=${bit(clipboard)}"
         return truncateUtf8(raw, ProtocolV2.MAX_STATUS_DETAIL_BYTES)
     }
 
     fun degradedStatuses(): List<Status> {
         val out = ArrayList<Status>(MAX_CAPABILITIES)
+        if (!inputInjection) {
+            out += Status(StatusKind.DEGRADED, 0, CAP_INPUT_INJECTION)
+        }
         if (!rotationWatcher) {
-            out += Status(StatusKind.DEGRADED, BIT_ROTATION_EVENTS, "rotation_watcher")
+            out += Status(StatusKind.DEGRADED, BIT_ROTATION_EVENTS, CAP_ROTATION_WATCHER)
         }
         if (!displayPowerControl) {
-            out += Status(StatusKind.DEGRADED, BIT_DISPLAY_POWER, "display_power")
+            out += Status(StatusKind.DEGRADED, BIT_DISPLAY_POWER, CAP_DISPLAY_POWER)
         }
         if (!notificationShade) {
-            out += Status(StatusKind.DEGRADED, 0, "notification_shade")
+            out += Status(StatusKind.DEGRADED, 0, CAP_NOTIFICATION_SHADE)
         }
         if (!wake) {
-            out += Status(StatusKind.DEGRADED, 0, "wake")
+            out += Status(StatusKind.DEGRADED, 0, CAP_WAKE)
+        }
+        if (!clipboard) {
+            out += Status(StatusKind.DEGRADED, BIT_CLIPBOARD, CAP_CLIPBOARD)
         }
         return out
     }
@@ -79,11 +94,19 @@ data class ServerCapabilities(
     }
 
     companion object {
+        const val FEATURE_CLIPBOARD = 0x02
         const val FEATURE_DISPLAY_POWER = 0x08
         const val FEATURE_ROTATION_EVENTS = 0x10
-        private const val BIT_DISPLAY_POWER = 3
-        private const val BIT_ROTATION_EVENTS = 4
-        private const val MAX_CAPABILITIES = 4
+        const val BIT_CLIPBOARD = 1
+        const val BIT_DISPLAY_POWER = 3
+        const val BIT_ROTATION_EVENTS = 4
+        const val CAP_INPUT_INJECTION = "input_injection"
+        const val CAP_ROTATION_WATCHER = "rotation_watcher"
+        const val CAP_DISPLAY_POWER = "display_power"
+        const val CAP_NOTIFICATION_SHADE = "notification_shade"
+        const val CAP_WAKE = "wake"
+        const val CAP_CLIPBOARD = "clipboard"
+        private const val MAX_CAPABILITIES = 6
     }
 }
 
@@ -102,7 +125,9 @@ interface DeviceStateController {
 
 class AndroidDeviceStateController(
     private val logger: Logger,
-    private val displayPowerBackend: DisplayPowerBackend = ReflectionDisplayPowerBackend(logger)
+    private val displayPowerBackend: DisplayPowerBackend = ReflectionDisplayPowerBackend(logger),
+    private val platformContext: PlatformContext = FakeContext(),
+    private val sdkInt: Int = Build.VERSION.SDK_INT
 ) : DeviceStateController {
     override val displayPowerSupported: Boolean
         get() = displayPowerBackend.isSupported
@@ -125,7 +150,13 @@ class AndroidDeviceStateController(
     }
 
     override fun restoreState(state: SavedDeviceState) {
-        restoreRotationState(state.accelerometerRotation, state.userRotation, logger)
+        restoreRotationState(
+            accelerometerRotation = state.accelerometerRotation,
+            userRotation = state.userRotation,
+            logger = logger,
+            callerPackage = platformContext.callerPackage,
+            sdkInt = sdkInt
+        )
         if (displayPowerBackend.isSupported) {
             displayPowerBackend.setDisplayPowerOn(state.displayPowerOn)
         }
@@ -193,14 +224,26 @@ class AndroidDeviceStateController(
         private const val TAG = "DeviceStateController"
         private const val COMMAND_TIMEOUT_MS = 1_500L
 
-        fun restoreRotationState(accelerometerRotation: Int, userRotation: Int, logger: Logger) {
+        fun restoreRotationState(
+            accelerometerRotation: Int,
+            userRotation: Int,
+            logger: Logger,
+            callerPackage: String = ShellIdentity.DEFAULT_PACKAGE_NAME,
+            sdkInt: Int = Build.VERSION.SDK_INT
+        ) {
             val wm = resolveWindowManager(logger)
             var restoredViaBinder = false
             if (wm != null) {
                 restoredViaBinder = if (accelerometerRotation == 0) {
-                    freezeRotation(wm, userRotation.coerceIn(0, ProtocolV2.MAX_ROTATION), logger)
+                    freezeRotation(
+                        wm = wm,
+                        rotation = userRotation.coerceIn(0, ProtocolV2.MAX_ROTATION),
+                        callerPackage = callerPackage,
+                        sdkInt = sdkInt,
+                        logger = logger
+                    )
                 } else {
-                    thawRotation(wm, logger)
+                    thawRotation(wm, callerPackage, sdkInt, logger)
                 }
             }
             if (!restoredViaBinder) {
@@ -234,18 +277,13 @@ class AndroidDeviceStateController(
             null
         }
 
-        private fun thawRotation(wm: Any, logger: Logger): Boolean = try {
-            val withCaller = try {
-                wm.javaClass.getMethod("thawRotation", String::class.java)
-            } catch (_: NoSuchMethodException) {
-                null
-            }
-            if (withCaller != null) {
-                withCaller.invoke(wm, "velocast-restore")
-            } else {
-                wm.javaClass.getMethod("thawRotation").invoke(wm)
-            }
-            true
+        private fun thawRotation(
+            wm: Any,
+            callerPackage: String,
+            sdkInt: Int,
+            logger: Logger
+        ): Boolean = try {
+            WindowManagerRotationHelper.thawRotation(wm, callerPackage, sdkInt) != null
         } catch (e: InvocationTargetException) {
             logger.warn(TAG, "thawRotation failed", e.targetException ?: e)
             false
@@ -257,23 +295,19 @@ class AndroidDeviceStateController(
             false
         }
 
-        private fun freezeRotation(wm: Any, rotation: Int, logger: Logger): Boolean = try {
-            val withCaller = try {
-                wm.javaClass.getMethod(
-                    "freezeRotation",
-                    Int::class.javaPrimitiveType,
-                    String::class.java
-                )
-            } catch (_: NoSuchMethodException) {
-                null
-            }
-            if (withCaller != null) {
-                withCaller.invoke(wm, rotation, "velocast-restore")
-            } else {
-                wm.javaClass.getMethod("freezeRotation", Int::class.javaPrimitiveType)
-                    .invoke(wm, rotation)
-            }
-            true
+        private fun freezeRotation(
+            wm: Any,
+            rotation: Int,
+            callerPackage: String,
+            sdkInt: Int,
+            logger: Logger
+        ): Boolean = try {
+            WindowManagerRotationHelper.freezeRotation(
+                wm = wm,
+                rotation = rotation,
+                callerPackage = callerPackage,
+                sdkInt = sdkInt
+            ) != null
         } catch (e: InvocationTargetException) {
             logger.warn(TAG, "freezeRotation failed", e.targetException ?: e)
             false

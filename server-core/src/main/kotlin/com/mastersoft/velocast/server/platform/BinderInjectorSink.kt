@@ -1,6 +1,8 @@
 package com.mastersoft.velocast.server.platform
 
+import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyCharacterMap
@@ -12,6 +14,7 @@ import com.mastersoft.velocast.server.InjectorSink
 import com.mastersoft.velocast.server.Logger
 import com.mastersoft.velocast.server.UnsupportedPlatformException
 import java.io.BufferedReader
+import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
 import java.lang.reflect.InvocationTargetException
@@ -19,18 +22,32 @@ import java.lang.reflect.Method
 import java.util.concurrent.TimeUnit
 
 /**
- * Android Binder IPC implementation of [InjectorSink]. Pre-allocates pointer property and
- * coordinate arrays once and reuses them across all touch events.
+ * Android Binder IPC implementation of [InjectorSink] with per-API-level reflection and
+ * [PlatformContext] caller identity (`com.android.shell`) (SEC-04, CQ-03, L8).
+ *
+ * Pre-allocates pointer property and coordinate arrays once and reuses them across all touch
+ * events.
  */
-class BinderInjectorSink(private val logger: Logger) : InjectorSink {
-    private val inputManager: Pair<Any, Method> = BinderResolvers.resolveInputManager(logger)
+class BinderInjectorSink(
+    private val logger: Logger,
+    private val platformContext: PlatformContext = FakeContext(),
+    private val sdkInt: Int = Build.VERSION.SDK_INT
+) : InjectorSink {
+    private val inputManager: Pair<Any, Method> =
+        BinderResolvers.resolveInputManager(sdkInt, logger)
     private val statusBar: StatusBarHandles? = BinderResolvers.resolveStatusBarService(logger)
     private val windowManager: Any? = BinderResolvers.resolveWindowManagerService(logger)
+    private val initialInjectionSupported: Boolean =
+        BinderResolvers.probeHarmlessKeyInjection(inputManager, logger)
+
+    override val hasInputInjection: Boolean
+        get() = initialInjectionSupported
 
     override val hasNotificationShade: Boolean
-        get() = statusBar != null
+        get() = statusBar != null || File(CMD_BIN_PATH).canExecute()
 
-    override val hasWakeKeyInjection: Boolean = true
+    override val hasWakeKeyInjection: Boolean
+        get() = initialInjectionSupported
 
     private val pointerProps = Array(MAX_SLOTS) { MotionEvent.PointerProperties() }
     private val pointerCoords = Array(MAX_SLOTS) { MotionEvent.PointerCoords() }
@@ -98,15 +115,13 @@ class BinderInjectorSink(private val logger: Logger) : InjectorSink {
             statusBar?.expandMethod,
             logger
         )
-        if (!invoked &&
-            !ShellFallback.runBounded(
+        if (!invoked) {
+            ShellFallback.runBounded(
                 logger,
-                "/system/bin/cmd",
+                CMD_BIN_PATH,
                 "statusbar",
                 "expand-notifications"
             )
-        ) {
-            ShellFallback.runBounded(logger, "/system/bin/service", "call", "statusbar", "1")
         }
     }
 
@@ -116,16 +131,21 @@ class BinderInjectorSink(private val logger: Logger) : InjectorSink {
             statusBar?.collapseMethod,
             logger
         )
-        if (!invoked &&
-            !ShellFallback.runBounded(logger, "/system/bin/cmd", "statusbar", "collapse")
-        ) {
-            ShellFallback.runBounded(logger, "/system/bin/service", "call", "statusbar", "2")
+        if (!invoked) {
+            ShellFallback.runBounded(logger, CMD_BIN_PATH, "statusbar", "collapse")
         }
     }
 
     override fun toggleScreenRotation() {
         val wm = windowManager
-        if (wm != null && BinderResolvers.toggleRotation(wm, logger)) {
+        if (wm != null &&
+            BinderResolvers.toggleRotation(
+                wm = wm,
+                callerPackage = platformContext.callerPackage,
+                sdkInt = sdkInt,
+                logger = logger
+            )
+        ) {
             return
         }
         ShellFallback.toggleRotationViaSettings(logger)
@@ -166,42 +186,83 @@ class BinderInjectorSink(private val logger: Logger) : InjectorSink {
 
     private companion object {
         const val TAG = "BinderInjectorSink"
+        const val CMD_BIN_PATH = "/system/bin/cmd"
         const val INJECT_INPUT_EVENT_MODE_ASYNC = 0
         const val MAX_SLOTS = ProtocolV2.MAX_POINTER_ID + 1
     }
 }
 
-private data class StatusBarHandles(
+internal data class StatusBarHandles(
     val service: Any,
     val expandMethod: Method,
     val collapseMethod: Method?
 )
 
-private object BinderResolvers {
+internal object BinderResolvers {
     private const val TAG = "BinderInjectorSink"
+    private const val INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT = 1
 
-    fun resolveInputManager(logger: Logger): Pair<Any, Method> {
-        var globalError: Throwable
-        try {
-            val resolved = reflectInputManager("android.hardware.input.InputManagerGlobal")
-            logger.info(TAG, "Using InputManagerGlobal.injectInputEvent")
-            return resolved
-        } catch (e: ReflectiveOperationException) {
-            globalError = e
-            logger.warn(TAG, "InputManagerGlobal unavailable; trying InputManager", e)
-        } catch (e: SecurityException) {
-            globalError = e
-            logger.warn(TAG, "InputManagerGlobal denied; trying InputManager", e)
+    fun resolveInputManager(sdkInt: Int, logger: Logger): Pair<Any, Method> {
+        var lastError: Throwable? = null
+        for (candidate in PlatformApiPolicy.inputManagerClasses(sdkInt)) {
+            try {
+                val resolved = reflectInputManager(candidate.className)
+                logger.info(TAG, "Using ${candidate.className}.injectInputEvent")
+                return resolved
+            } catch (e: ReflectiveOperationException) {
+                if (lastError == null) {
+                    lastError = e
+                } else {
+                    e.addSuppressed(lastError)
+                    lastError = e
+                }
+                logger.debug(TAG, "${candidate.className} unavailable on API $sdkInt", e)
+            } catch (e: SecurityException) {
+                lastError = e
+                logger.warn(TAG, "${candidate.className} denied on API $sdkInt", e)
+            } catch (e: LinkageError) {
+                lastError = e
+                logger.debug(TAG, "${candidate.className} linkage error on API $sdkInt", e)
+            }
         }
+        throw UnsupportedPlatformException(
+            "Unable to bind InputManager.injectInputEvent on API $sdkInt",
+            lastError
+        )
+    }
 
-        return try {
-            val resolved = reflectInputManager("android.hardware.input.InputManager")
-            logger.info(TAG, "Using InputManager.injectInputEvent")
-            resolved
-        } catch (e: ReflectiveOperationException) {
-            e.addSuppressed(globalError)
-            throw UnsupportedPlatformException("Unable to bind InputManager.injectInputEvent", e)
+    fun probeHarmlessKeyInjection(inputManager: Pair<Any, Method>, logger: Logger): Boolean = try {
+        val now = SystemClock.uptimeMillis()
+        val event = KeyEvent(
+            now,
+            now,
+            KeyEvent.ACTION_UP,
+            KeyEvent.KEYCODE_UNKNOWN,
+            0,
+            0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD,
+            0,
+            0,
+            InputDevice.SOURCE_KEYBOARD
+        )
+        val ok = inputManager.second.invoke(
+            inputManager.first,
+            event,
+            INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT
+        ) as? Boolean
+        if (ok == false) {
+            logger.warn(TAG, "Input injection probe returned false (check OEM security settings)")
         }
+        ok != false
+    } catch (e: InvocationTargetException) {
+        logger.warn(TAG, "Input injection probe denied or failed", e.targetException ?: e)
+        false
+    } catch (e: ReflectiveOperationException) {
+        logger.warn(TAG, "Input injection probe reflection failed", e)
+        false
+    } catch (e: SecurityException) {
+        logger.warn(TAG, "Input injection probe denied", e)
+        false
     }
 
     fun resolveStatusBarService(logger: Logger): StatusBarHandles? = try {
@@ -265,15 +326,15 @@ private object BinderResolvers {
         }
     }
 
-    fun toggleRotation(wm: Any, logger: Logger): Boolean = try {
+    fun toggleRotation(wm: Any, callerPackage: String, sdkInt: Int, logger: Logger): Boolean = try {
         val getRot = wm.javaClass.getMethod("getDefaultDisplayRotation")
         val current = (getRot.invoke(wm) as? Int) ?: 0
         val next = if (current == 0 || current == 2) 1 else 0
-        val invoked = tryInvokeFreezeRotation(wm, next, logger)
-        if (invoked) {
-            logger.info(TAG, "Toggled rotation via IWindowManager: $current -> $next")
+        val invoked = WindowManagerRotationHelper.freezeRotation(wm, next, callerPackage, sdkInt)
+        if (invoked != null) {
+            logger.info(TAG, "Toggled rotation via IWindowManager.$invoked: $current -> $next")
         }
-        invoked
+        invoked != null
     } catch (e: ReflectiveOperationException) {
         logger.warn(TAG, "IWindowManager rotation failed", e)
         false
@@ -308,33 +369,72 @@ private object BinderResolvers {
         logger.debug(TAG, "Method $name not exposed on ${cls.name}", e)
         null
     }
+}
 
-    private fun tryInvokeFreezeRotation(wm: Any, rotation: Int, logger: Logger): Boolean {
+internal object WindowManagerRotationHelper {
+    fun freezeRotation(wm: Any, rotation: Int, callerPackage: String, sdkInt: Int): String? {
         val cls = wm.javaClass
-        var invoked = false
-        val withCaller = try {
-            cls.getMethod("freezeRotation", Int::class.javaPrimitiveType, String::class.java)
-        } catch (e: NoSuchMethodException) {
-            logger.debug(TAG, "freezeRotation(int, String) absent", e)
+        var methodUsed: String? = null
+        for (strategy in PlatformApiPolicy.rotationFreezeStrategies(sdkInt)) {
+            if (methodUsed != null) break
+            when (strategy) {
+                PlatformApiPolicy.RotationFreezeStrategy.WITH_CALLER_PACKAGE -> {
+                    val m = optionalMethod(
+                        cls,
+                        "freezeRotation",
+                        Int::class.javaPrimitiveType,
+                        String::class.java
+                    )
+                    if (m != null) {
+                        m.invoke(wm, rotation, callerPackage)
+                        methodUsed = "freezeRotation(int, String)"
+                    }
+                }
+
+                PlatformApiPolicy.RotationFreezeStrategy.WITHOUT_CALLER_PACKAGE -> {
+                    val m = optionalMethod(cls, "freezeRotation", Int::class.javaPrimitiveType)
+                    if (m != null) {
+                        m.invoke(wm, rotation)
+                        methodUsed = "freezeRotation(int)"
+                    }
+                }
+            }
+        }
+        return methodUsed
+    }
+
+    fun thawRotation(wm: Any, callerPackage: String, sdkInt: Int): String? {
+        val cls = wm.javaClass
+        var methodUsed: String? = null
+        for (strategy in PlatformApiPolicy.rotationFreezeStrategies(sdkInt)) {
+            if (methodUsed != null) break
+            when (strategy) {
+                PlatformApiPolicy.RotationFreezeStrategy.WITH_CALLER_PACKAGE -> {
+                    val m = optionalMethod(cls, "thawRotation", String::class.java)
+                    if (m != null) {
+                        m.invoke(wm, callerPackage)
+                        methodUsed = "thawRotation(String)"
+                    }
+                }
+
+                PlatformApiPolicy.RotationFreezeStrategy.WITHOUT_CALLER_PACKAGE -> {
+                    val m = optionalMethod(cls, "thawRotation")
+                    if (m != null) {
+                        m.invoke(wm)
+                        methodUsed = "thawRotation()"
+                    }
+                }
+            }
+        }
+        return methodUsed
+    }
+
+    private fun optionalMethod(cls: Class<*>, name: String, vararg params: Class<*>?): Method? =
+        try {
+            cls.getMethod(name, *params).apply { isAccessible = true }
+        } catch (_: NoSuchMethodException) {
             null
         }
-        if (withCaller != null) {
-            withCaller.invoke(wm, rotation, "velocast")
-            invoked = true
-        } else {
-            val legacy = try {
-                cls.getMethod("freezeRotation", Int::class.javaPrimitiveType)
-            } catch (e: NoSuchMethodException) {
-                logger.debug(TAG, "freezeRotation(int) absent", e)
-                null
-            }
-            if (legacy != null) {
-                legacy.invoke(wm, rotation)
-                invoked = true
-            }
-        }
-        return invoked
-    }
 }
 
 private object ShellFallback {
