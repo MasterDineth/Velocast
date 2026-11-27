@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S04B — `:client-core` asynchronous `VideoDecoder`, `DROP_OLDEST` frame queue, buffer pools, touch pipeline, stage metrics, and `:app-viewer` v2 wiring (complete on `step/S04b-decoder`).
+S05A — Shell-user feasibility spike tooling & `CapabilityProbe` (complete on `step/S05a-spike`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -34,9 +34,14 @@ S04B — `:client-core` asynchronous `VideoDecoder`, `DROP_OLDEST` frame queue, 
   - Added unit & recorded-H.264 tests (`FrameBufferPoolAndZeroAllocTest`, `VideoFrameQueueTest`, `VideoDecoderTest`, `TouchPipelineTest`, `SessionMetricsTest`, `ViewerTouchWiringTest`) plus `VideoDecoderInstrumentedTest` verified on two physical Android devices after an induced 1-second consumer stall:
     - Host `6f8d1516` (`M2101K6G`, Android 16): `preMedianUs=10862`, `postMedianUs=10505`, `recoveryMs=31`, `maxQueueDepth=6`, `dropped=50`, `skipped=0`, `keyframeReqs=52`, `rendered=104`.
     - Client `fba5cfe8` (`25019PNF3C`, Android 17): `preMedianUs=2980`, `postMedianUs=3374`, `recoveryMs=5`, `maxQueueDepth=6`, `dropped=47`, `skipped=0`, `keyframeReqs=47`, `rendered=107`.
+- S05A — Shell-user feasibility spike tooling & `CapabilityProbe` (complete on `step/S05a-spike`):
+  - Added `PlatformContext`, `ShellIdentity`, and `FakeContext` (`FakeContext.kt`) in `com.mastersoft.velocast.server.platform` (default package `com.android.shell`, UID-aware `callerUserId`/`isShellUid`/`isRootUid`/`AttributionSource`) without UI libraries or app `Context`.
+  - Added `CapabilityProbe`, `ProbeResult` (`Supported`, `Unsupported`, `Denied`), `CapabilityProbeBackend`, `AndroidCapabilityProbeBackend`, and `CapabilityProbeMain` exercising `virtual_display`, `input_injection`, `notification_shade`, `rotation`, `display_power`, `wake`, and `clipboard`, emitting one JSON line per capability.
+  - Added `:server-core:assembleDexJar` Gradle task (`server-core/build.gradle.kts`) and spike scripts `tools/spike/run-shell-server.sh`, `tools/spike/run-shell-server.ps1`, and `tools/spike/README.md`.
+  - Added unit tests (`CapabilityProbeTest`, `FakeContextIdentityTest`) and ran `run-shell-server.ps1` against `M2101K6G` (Android 16, API 36) and `25019PNF3C` (Android 17, API 37), saving results in `tools/spike/results/`.
 
 ## Next
-- Next step per `docs/steps.md` (viewer UX/diagnostics & launchers).
+- Collect remaining device matrix results (Android 11, 13, 14, plus additional OEM ROMs) under `tools/spike/results/` and proceed to S05B (`docs/spike-shell-user.md` and platform shim fixes).
 
 ## Open questions
 - None.
