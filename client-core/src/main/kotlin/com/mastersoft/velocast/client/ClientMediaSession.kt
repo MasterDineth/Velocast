@@ -45,8 +45,6 @@ class ClientMediaSession(
 
     private val keyframeSignal = Channel<Unit>(Channel.CONFLATED)
     private val keyframePacket = ControlPacket().apply { type = MessageType.KEYFRAME_REQ }
-    private val keyPacket = ControlPacket().apply { type = MessageType.KEY }
-    private val actionPacket = ControlPacket().apply { type = MessageType.ACTION }
 
     private var decoderConsumerJob: Job? = null
     private var keyframeSenderJob: Job? = null
@@ -194,15 +192,17 @@ class ClientMediaSession(
         scope.launch {
             if (sessionEngine.state.value !is SessionState.Streaming) return@launch
             try {
-                keyPacket.type = MessageType.KEY
-                keyPacket.seq = 0
-                keyPacket.param = keyCode
-                keyPacket.x = 0f
-                keyPacket.y = 0f
-                keyPacket.pointer = KeyAction.DOWN.id
-                transport.writeControlPacket(keyPacket)
-                keyPacket.pointer = KeyAction.UP.id
-                transport.writeControlPacket(keyPacket)
+                val packet = ControlPacket().apply {
+                    type = MessageType.KEY
+                    seq = 0
+                    param = keyCode
+                    x = 0f
+                    y = 0f
+                    pointer = KeyAction.DOWN.id
+                }
+                transport.writeControlPacket(packet)
+                packet.pointer = KeyAction.UP.id
+                transport.writeControlPacket(packet)
             } catch (_: IOException) {
                 // Handled by session liveness monitor.
             }
@@ -213,13 +213,15 @@ class ClientMediaSession(
         scope.launch {
             if (sessionEngine.state.value !is SessionState.Streaming) return@launch
             try {
-                actionPacket.type = MessageType.ACTION
-                actionPacket.pointer = 0
-                actionPacket.seq = 0
-                actionPacket.param = action.id
-                actionPacket.x = 0f
-                actionPacket.y = 0f
-                transport.writeControlPacket(actionPacket)
+                val packet = ControlPacket().apply {
+                    type = MessageType.ACTION
+                    pointer = 0
+                    seq = 0
+                    param = action.id
+                    x = 0f
+                    y = 0f
+                }
+                transport.writeControlPacket(packet)
             } catch (_: IOException) {
                 // Handled by session liveness monitor.
             }
