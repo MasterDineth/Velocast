@@ -11,9 +11,11 @@ import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -225,6 +227,59 @@ class VideoDecoderTest {
         decoder.stop()
     }
 
+    @Test
+    fun `attachSurface skips setOutputSurface for already active surface`() {
+        val factory = FakeDecoderCodecFactory()
+        val decoder = VideoDecoder(
+            codecFactory = factory,
+            initialWidth = 320,
+            initialHeight = 240,
+            recoveryExecutor = Executor { it.run() }
+        )
+
+        val firstSurface = dummySurface()
+        val secondSurface = dummySurface()
+
+        decoder.start(firstSurface)
+        val adapter = factory.instances.single()
+        assertEquals(0, adapter.setOutputSurfaceCalls.get())
+
+        // Attaching the exact same surface again while codec is active must be a no-op.
+        decoder.attachSurface(firstSurface)
+        assertEquals(0, adapter.setOutputSurfaceCalls.get())
+
+        // Attaching a different surface delegates to setOutputSurface once.
+        decoder.attachSurface(secondSurface)
+        assertEquals(1, adapter.setOutputSurfaceCalls.get())
+
+        // Attaching secondSurface again must also be a no-op.
+        decoder.attachSurface(secondSurface)
+        assertEquals(1, adapter.setOutputSurfaceCalls.get())
+
+        decoder.stop()
+    }
+
+    @Test
+    fun `stop shuts down default recoveryExecutor without shutting down caller executor`() {
+        val factory = FakeDecoderCodecFactory()
+        val defaultDecoder = VideoDecoder(codecFactory = factory)
+        defaultDecoder.start(dummySurface())
+        defaultDecoder.stop()
+
+        val callerExecutor = Executors.newSingleThreadExecutor()
+        try {
+            val callerDecoder = VideoDecoder(
+                codecFactory = factory,
+                recoveryExecutor = callerExecutor
+            )
+            callerDecoder.start(dummySurface())
+            callerDecoder.stop()
+            assertFalse(callerExecutor.isShutdown)
+        } finally {
+            callerExecutor.shutdownNow()
+        }
+    }
+
     private fun videoFrame(seq: Int, ptsUs: Long, bytes: ByteArray, isKey: Boolean): ReceivedFrame =
         ReceivedFrame(
             type = MessageType.VIDEO,
@@ -263,6 +318,7 @@ class VideoDecoderTest {
         var flushed = false
         var resetCalled = false
         var released = false
+        val setOutputSurfaceCalls = AtomicInteger(0)
         val queuedInputs = CopyOnWriteArrayList<QueuedInputRecord>()
         private val inputBuffers = HashMap<Int, ByteBuffer>()
 
@@ -286,7 +342,9 @@ class VideoDecoderTest {
             resetCalled = true
         }
 
-        override fun setOutputSurface(surface: Surface) = Unit
+        override fun setOutputSurface(surface: Surface) {
+            setOutputSurfaceCalls.incrementAndGet()
+        }
 
         override fun getInputBuffer(index: Int): ByteBuffer =
             inputBuffers.getOrPut(index) { ByteBuffer.allocate(64 * 1024) }

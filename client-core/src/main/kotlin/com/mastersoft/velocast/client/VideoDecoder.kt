@@ -13,6 +13,7 @@ import com.mastersoft.velocast.protocol.FrameFlags
 import com.mastersoft.velocast.protocol.VideoSize
 import java.nio.ByteBuffer
 import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -860,12 +861,16 @@ private class DecoderCore(
     maxConsecutiveRecoveryAttempts: Int,
     clock: SessionClock,
     private val metrics: SessionMetrics?,
-    recoveryExecutor: Executor,
+    recoveryExecutor: Executor?,
     private val onNeedKeyframe: () -> Unit,
     private val onVideoSizeChanged: (width: Int, height: Int) -> Unit,
     private val onFrameRendered: () -> Unit,
     onFatalError: (SessionError) -> Unit
 ) {
+    private val ownedRecoveryExecutor: ExecutorService? =
+        if (recoveryExecutor == null) defaultRecoveryExecutor() else null
+    private val resolvedRecoveryExecutor: Executor =
+        recoveryExecutor ?: requireNotNull(ownedRecoveryExecutor)
     private val store = DecoderStateStore(
         initialWidth = initialWidth,
         initialHeight = initialHeight,
@@ -890,7 +895,7 @@ private class DecoderCore(
             store = store,
             lifecycle = lifecycle,
             metrics = metrics,
-            recoveryExecutor = recoveryExecutor,
+            recoveryExecutor = resolvedRecoveryExecutor,
             onNeedKeyframe = onNeedKeyframe,
             onFatalError = onFatalError
         )
@@ -929,21 +934,26 @@ private class DecoderCore(
     fun attachSurface(surface: Surface) {
         store.lock.withLock {
             if (store.stopped) return
+            if (store.activeSurface === surface && store.codec != null) {
+                store.surfaceValid = true
+                return
+            }
             store.activeSurface = surface
             store.surfaceValid = true
-            if (!store.started) return
-            val existing = store.codec
-            if (existing == null) {
-                lifecycle.configureAndStartLocked(
-                    store.configuredWidth,
-                    store.configuredHeight,
-                    surface,
-                    recreate = true
-                )
-                lifecycle.enqueueCachedConfigLocked()
-                onNeedKeyframe()
-            } else {
-                lifecycle.attachSurfaceToExistingLocked(existing, surface)
+            if (store.started) {
+                val existing = store.codec
+                if (existing == null) {
+                    lifecycle.configureAndStartLocked(
+                        store.configuredWidth,
+                        store.configuredHeight,
+                        surface,
+                        recreate = true
+                    )
+                    lifecycle.enqueueCachedConfigLocked()
+                    onNeedKeyframe()
+                } else {
+                    lifecycle.attachSurfaceToExistingLocked(existing, surface)
+                }
             }
         }
     }
@@ -1029,6 +1039,7 @@ private class DecoderCore(
             store.mutableState.value = DecoderState.Idle
         }
         renderWorker.stop(RENDER_STOP_JOIN_MS)
+        ownedRecoveryExecutor?.shutdownNow()
     }
 
     private fun applyConfigUpdateLocked(
@@ -1193,6 +1204,10 @@ private class DecoderCore(
 
     private companion object {
         const val RENDER_STOP_JOIN_MS = 1_000L
+
+        fun defaultRecoveryExecutor(): ExecutorService = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "velocast-decoder-recovery").apply { isDaemon = true }
+        }
     }
 }
 
@@ -1211,7 +1226,7 @@ class VideoDecoder(
     maxConsecutiveRecoveryAttempts: Int = DEFAULT_MAX_RECOVERY_ATTEMPTS,
     clock: SessionClock = SystemSessionClock,
     metrics: SessionMetrics? = null,
-    recoveryExecutor: Executor = defaultRecoveryExecutor(),
+    recoveryExecutor: Executor? = null,
     onNeedKeyframe: () -> Unit = {},
     onVideoSizeChanged: (width: Int, height: Int) -> Unit = { _, _ -> },
     onFrameRendered: () -> Unit = {},
@@ -1270,9 +1285,5 @@ class VideoDecoder(
         const val DEFAULT_MAX_ADAPTIVE_HEIGHT = 2560
         const val DEFAULT_INPUT_QUEUE_CAPACITY = 4
         const val DEFAULT_MAX_RECOVERY_ATTEMPTS = 3
-
-        private fun defaultRecoveryExecutor(): Executor = Executors.newSingleThreadExecutor { r ->
-            Thread(r, "velocast-decoder-recovery").apply { isDaemon = true }
-        }
     }
 }
