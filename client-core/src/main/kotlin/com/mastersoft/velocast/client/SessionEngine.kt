@@ -33,7 +33,8 @@ class SessionEngine(
     private val clock: SessionClock = SystemSessionClock,
     private val surfaceController: SurfaceController = NoOpSurfaceController,
     private val frameConsumer: SessionFrameConsumer = NoOpSessionFrameConsumer,
-    private val nonceGenerator: () -> ByteArray = defaultNonceGenerator
+    private val nonceGenerator: () -> ByteArray = defaultNonceGenerator,
+    private val lifecycleHooks: SessionLifecycleHooks = NoOpSessionLifecycleHooks
 ) {
     private val lifecycleMutex = Mutex()
     private val pauseMutex = Mutex()
@@ -68,7 +69,8 @@ class SessionEngine(
                 config = config,
                 clock = clock,
                 frameConsumer = frameConsumer,
-                nonceGenerator = nonceGenerator
+                nonceGenerator = nonceGenerator,
+                lifecycleHooks = lifecycleHooks
             ).run()
         }
     }
@@ -77,6 +79,7 @@ class SessionEngine(
     suspend fun pause() {
         pauseMutex.withLock {
             val streaming = stateHolder.current as? SessionState.Streaming ?: return
+            lifecycleHooks.onBeforePause()
             surfaceController.releaseSurface()
             stateHolder.set(
                 SessionState.Paused(
@@ -143,6 +146,7 @@ class SessionEngine(
         lifecycleMutex.withLock {
             val current = stateHolder.current
             if (current is SessionState.Streaming || current is SessionState.Paused) {
+                lifecycleHooks.onBeforeDisconnect()
                 try {
                     transport.writeControl(ControlCommand.Bye(null))
                 } catch (_: IOException) {
@@ -158,8 +162,27 @@ class SessionEngine(
                 transport.close()
                 serverLauncher.stop()
             }
+            lifecycleHooks.onSessionEnded()
             stateHolder.clearPausedFlags()
             stateHolder.set(SessionState.Idle)
+        }
+    }
+
+    /** Transitions an active session into [SessionState.Failed] after an unrecoverable error. */
+    suspend fun failWith(error: SessionError) {
+        lifecycleMutex.withLock {
+            val active = sessionJob
+            sessionJob = null
+            stateHolder.cancelWaiters()
+            active?.cancel()
+            withContext(NonCancellable) {
+                active?.join()
+                transport.close()
+                serverLauncher.stop()
+            }
+            lifecycleHooks.onSessionEnded()
+            stateHolder.clearPausedFlags()
+            stateHolder.set(SessionState.Failed(error))
         }
     }
 
@@ -280,7 +303,8 @@ private class SessionRunner(
     private val config: SessionConfig,
     private val clock: SessionClock,
     private val frameConsumer: SessionFrameConsumer,
-    private val nonceGenerator: () -> ByteArray
+    private val nonceGenerator: () -> ByteArray,
+    private val lifecycleHooks: SessionLifecycleHooks
 ) {
     suspend fun run() {
         var activeSetup = establishInitialSession()
@@ -303,6 +327,7 @@ private class SessionRunner(
             activeSetup.closeConnection(transport)
             activeSetup = handleSessionEnd(activeSetup.endpoint, endReason)
         }
+        lifecycleHooks.onSessionEnded()
     }
 
     private suspend fun establishInitialSession(): ActiveSessionSetup? {
@@ -335,6 +360,7 @@ private class SessionRunner(
         }
 
         is SessionEndReason.RecoverableLoss -> {
+            lifecycleHooks.onConnectionLost()
             if (stateHolder.current is SessionState.Paused) {
                 handlePausedLinkLoss()
             } else {
