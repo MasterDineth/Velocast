@@ -3,27 +3,27 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S03A — `:server-core` extraction, `SessionGuard`, state machine, input validation, touch state machine, and `Logger` (complete on `step/S03a-server-core`).
+S03B — `:server-core` media pipeline, rotation handling, state restore, and capability reporting (complete on `step/S03b-media`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
 - S02 — Protocol v2 module (merged in PR #4).
-- S03A — `:server-core` refactor & hardening:
-  - Added entry point `com.mastersoft.velocast.server.Main` (`--port`, `--bind IP|loopback`, `--state-dir`, `--secret-from-stdin`, `--log-level`) and `ServerRunner`, printing `"READY port=<p> nonce=<n>"` and flushing stdout.
-  - Replaced the unauthenticated accept loop with `SessionGuard` (3 s total handshake deadline via `HandshakeTimer`, per-IP exponential back-off via `PeerBackoffTracker`, authenticated-only replacement, one active session at a time) and `HmacSha256Authenticator` (`Authenticator`).
-  - Added `ServerSession` state machine (`Handshaking`, `Active`, `Closing`) with single resource ownership (`PeerSocket`, `InputInjector`, `MediaPipeline`, `SessionFrameSink`) and structured shutdown without unsynchronized flags or accept-thread joins.
-  - Wired `:protocol` validators (`ControlReader`, `SeqTracker`, `PointerStateTracker`, `KeyCodes`, `TextInput`, `ClipboardMessage`, `Validators`); violations send fatal `ERROR` and close the session.
-  - Rewrote `InputInjector` touch state machine with strict pointer validation, `ACTION_CANCEL` on teardown and `PAUSE`, and pre-allocated primitive arrays (zero per-event allocation); isolated Android Binder IPC into `BinderInjectorSink`.
-  - Replaced `/data/local/tmp` assumptions, `println`, `System.err`, and silent `catch (_: Throwable)` with `Logger` (levels, bounded ring buffer, optional `--state-dir/server.log`) and explicit cause logging.
-  - Removed `SurfaceControl` fallback and legacy `com.mastersoft.velocast.daemon` / `VeloCastDaemonMain` / v1 `Protocol`; `VirtualDisplayBridge` throws `UnsupportedPlatformException` when display mirroring is unavailable.
-  - Updated `:app-host` (`DaemonController`, `HostMainActivity`) to launch `com.mastersoft.velocast.server.Main` with `/data/adb/velocast` (`--state-dir`) and `secret.hex` on stdin.
-  - Added JUnit suites (`LoggerTest`, `ServerArgsAndMainTest`, `SessionGuardTest`, `ServerSessionValidationTest`, `TouchStateMachineTest`, `VirtualDisplayBridgeTest`).
+- S03A — `:server-core` refactor & hardening (merged in PR #5).
+- S03B — `:server-core` media pipeline hardening:
+  - Configured `ScreenEncoder` (`EncoderSettings.kt`, `H264NalHelper.kt`): `KEY_BITRATE_MODE` (`CBR` default with `--bitrate-mode VBR` benchmark switch), `KEY_MAX_B_FRAMES = 0`, `KEY_PROFILE = AVCProfileConstrainedBaseline` when `MediaCodecInfo` reports support, `KEY_PREPEND_HEADER_TO_SYNC_FRAMES = 1`, `KEY_LOW_LATENCY = 1`, `KEY_PRIORITY = 0`; chosen settings reported in `STATUS` (`BITRATE`, `FPS`).
+  - Added on-demand IDR requests (`PARAMETER_KEY_REQUEST_SYNC_FRAME`) on `KEYFRAME_REQ`, `RESUME`, size/rotation change, and any dropped frame, plus monotonic `captureUs` in every `VIDEO` frame header.
+  - Added bounded 3-frame latest-wins `FrameQueue` (`FrameQueue.kt`, dropping oldest non-keyframes first and requesting an IDR), dedicated writer thread in `SessionFrameSink` prioritizing `PONG`, `STATUS`, `ERROR`, `DEVICE_INFO`, and `BYE` over video, `TCP_NODELAY`, and configurable `SO_SNDBUF` defaulting to 64 KB (`--send-buffer-bytes`).
+  - Added `RotationStateMachine` + `RotationWatcherShim` (`IWindowManager.watchRotation` + `500 ms` `VirtualDisplayBridge` poll), rebuilding capture and encoder on size/rotation changes, sending `VIDEO_SIZE` then `CONFIG` then an IDR, and atomically updating `InputInjector` dimensions.
+  - Added session-start capture & teardown restore of rotation lock and display power (`DeviceStateController`, `DisplayPowerShim`), plus out-of-process `setsid` `com.mastersoft.velocast.server.CleanUp` guardian (`CleanUp.kt`, `CleanUpProcessGuardian.kt`) for `kill -9` recovery.
+  - Added capability `STATUS` reporting (`rotation_watcher`, `display_power`, `notification_shade`, `wake`) + `StatusKind.DEGRADED` entries and non-fatal `ErrorCode.INJECTION_DENIED` reporting on refused input injection.
+  - Added unit and instrumentation tests (`FrameQueueTest`, `SendPathStallAndPriorityTest`, `RotationStateMachineTest`, `EncoderSettingsAndNalTest`, `StateRestoreAndCleanUpTest`, `CapabilitiesAndInjectionDeniedTest`, `ScreenEncoderInstrumentedTest`).
 
 ## Next
-- S03B — Media pipeline hardening (`FrameQueue`, CBR/codec configuration, on-demand keyframes, rotation watcher, state restore + cleanup process, capture timestamps, capability report).
+- S04 — Client core: session engine, decoder and touch.
 
 ## Open questions
 - None.
 
 ## Owner checks pending (needs a real phone)
-- On a rooted old phone, verify starting the server through `:app-host` (`DaemonController` -> `com.mastersoft.velocast.server.Main` with `/data/adb/velocast` state dir) succeeds and accepts a v2 handshake.
+- On the rooted old phone, start the server through `:app-host` (`DaemonController` -> `com.mastersoft.velocast.server.Main` with `/data/adb/velocast`), connect, rotate three times, `kill -9` the server, and confirm rotation lock and display state are restored.
+- Run `./gradlew :server-core:connectedDebugAndroidTest` on a physical device or emulator if not already verified on CI/local device.

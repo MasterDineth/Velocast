@@ -4,53 +4,17 @@ import android.os.Build
 import android.os.Process
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.DisplayGeometry
-import com.mastersoft.velocast.protocol.FrameHeader
-import com.mastersoft.velocast.protocol.FrameWriter
 import com.mastersoft.velocast.protocol.LaunchMode
-import com.mastersoft.velocast.protocol.Payload
-import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.server.platform.AndroidDeviceStateController
 import com.mastersoft.velocast.server.platform.BinderInjectorSink
+import com.mastersoft.velocast.server.platform.DeviceStateController
+import com.mastersoft.velocast.server.platform.RotationWatcherShim
+import com.mastersoft.velocast.server.platform.SavedDeviceState
+import com.mastersoft.velocast.server.platform.ServerCapabilities
 import com.mastersoft.velocast.server.platform.VirtualDisplayBridge
 import java.io.Closeable
-import java.io.OutputStream
-
-/**
- * Serializes all outbound protocol v2 frames on a single connection lock.
- */
-class SessionFrameSink(private val writer: FrameWriter, private val out: OutputStream) {
-    private val lock = Any()
-
-    var phase: Phase
-        get() = synchronized(lock) { writer.phase }
-        set(value) {
-            synchronized(lock) { writer.phase = value }
-        }
-
-    fun writeMessage(msg: Payload, flags: Int? = null) {
-        synchronized(lock) {
-            if (flags != null) {
-                writer.writeMessage(msg, flags)
-            } else {
-                writer.writeMessage(msg)
-            }
-            out.flush()
-        }
-    }
-
-    fun writeVideoInPlace(header: FrameHeader, frameBuffer: ByteArray, payloadLength: Int) {
-        synchronized(lock) {
-            header.seq = writer.nextSeq
-            writer.writeInPlace(header, frameBuffer, payloadLength)
-            writer.nextSeq = (writer.nextSeq + 1) and SEQ_MASK
-            out.flush()
-        }
-    }
-
-    private companion object {
-        const val SEQ_MASK = 0xFFFF
-    }
-}
+import java.nio.file.Path
 
 interface MediaPipeline : Closeable {
     fun start()
@@ -58,18 +22,55 @@ interface MediaPipeline : Closeable {
     fun resume()
     fun requestKeyframe()
     fun reconfigure(bitrateBps: Int, fps: Int, scale: Float)
+    fun notifyRotationChanged() = Unit
 }
 
 interface SessionEnvironment {
     val capabilities: Int
     fun queryDeviceInfo(): DeviceInfo
     fun createInjector(display: DisplayGeometry): InputInjector
-    fun createMediaPipeline(display: DisplayGeometry, sink: SessionFrameSink): MediaPipeline
+    fun createMediaPipeline(
+        display: DisplayGeometry,
+        sink: SessionFrameSink,
+        onGeometryChanged: (DisplayGeometry) -> Unit = {}
+    ): MediaPipeline
+
+    fun createStateController(): DeviceStateController? = null
+
+    fun startCleanUpGuardian(
+        state: SavedDeviceState,
+        restoreDisplayPower: Boolean
+    ): CleanUpGuardian? = null
+
+    fun registerRotationWatcher(onRotationChanged: () -> Unit): Closeable? = null
+
+    fun probeCapabilities(
+        injector: InputInjector,
+        hasRotationWatcher: Boolean
+    ): ServerCapabilities = ServerCapabilities(
+        rotationWatcher = hasRotationWatcher,
+        displayPowerControl = false,
+        notificationShade = true,
+        wake = true
+    )
 }
 
-class AndroidSessionEnvironment(private val clock: ServerClock, private val logger: Logger) :
-    SessionEnvironment {
-    override val capabilities: Int = 0
+class AndroidSessionEnvironment(
+    private val clock: ServerClock,
+    private val logger: Logger,
+    private val stateDir: Path? = null,
+    private val bitrateMode: BitrateMode = BitrateMode.DEFAULT
+) : SessionEnvironment {
+    private val stateController = AndroidDeviceStateController(logger)
+
+    override val capabilities: Int
+        get() {
+            var mask = ServerCapabilities.FEATURE_ROTATION_EVENTS
+            if (stateController.displayPowerSupported) {
+                mask = mask or ServerCapabilities.FEATURE_DISPLAY_POWER
+            }
+            return mask
+        }
 
     override fun queryDeviceInfo(): DeviceInfo {
         val display = VirtualDisplayBridge(logger).queryDefaultDisplayGeometry()
@@ -93,12 +94,40 @@ class AndroidSessionEnvironment(private val clock: ServerClock, private val logg
 
     override fun createMediaPipeline(
         display: DisplayGeometry,
-        sink: SessionFrameSink
+        sink: SessionFrameSink,
+        onGeometryChanged: (DisplayGeometry) -> Unit
     ): MediaPipeline = ScreenEncoder(
         initialDisplay = display,
         frameSink = sink,
         clock = clock,
+        logger = logger,
+        options = StreamOptions(bitrateMode = bitrateMode),
+        onGeometryChanged = onGeometryChanged
+    )
+
+    override fun createStateController(): DeviceStateController = stateController
+
+    override fun startCleanUpGuardian(
+        state: SavedDeviceState,
+        restoreDisplayPower: Boolean
+    ): CleanUpGuardian? = ProcessCleanUpGuardian.start(
+        state = state,
+        restoreDisplayPower = restoreDisplayPower,
+        stateDir = stateDir,
         logger = logger
+    )
+
+    override fun registerRotationWatcher(onRotationChanged: () -> Unit): Closeable? =
+        RotationWatcherShim.register(logger) { onRotationChanged() }
+
+    override fun probeCapabilities(
+        injector: InputInjector,
+        hasRotationWatcher: Boolean
+    ): ServerCapabilities = ServerCapabilities(
+        rotationWatcher = hasRotationWatcher,
+        displayPowerControl = stateController.displayPowerSupported,
+        notificationShade = injector.hasNotificationShade,
+        wake = injector.hasWakeKeyInjection
     )
 
     private fun truncateUtf8(text: String, maxBytes: Int): String {

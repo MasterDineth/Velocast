@@ -357,6 +357,7 @@ class SessionGuardTest {
         assertTrue(fr.readHeader(h))
         assertEquals(MessageType.DEVICE_INFO, h.type)
         fr.readPayload(h)
+        TestClientDriver.drainInitialStatuses(fr, h)
 
         cw.ping(123)
         peer.clientOut.flush()

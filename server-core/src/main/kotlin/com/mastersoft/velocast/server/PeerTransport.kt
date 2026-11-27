@@ -29,17 +29,30 @@ interface ServerAcceptor : Closeable {
     fun accept(): PeerSocket
 }
 
-class TcpPeerSocket(private val socket: Socket, private val logger: Logger) : PeerSocket {
+class TcpPeerSocket(
+    private val socket: Socket,
+    private val logger: Logger,
+    sendBufferBytes: Int = DEFAULT_SEND_BUFFER_BYTES
+) : PeerSocket {
     init {
+        require(sendBufferBytes >= MIN_SEND_BUFFER_BYTES) {
+            "sendBufferBytes must be >= $MIN_SEND_BUFFER_BYTES: $sendBufferBytes"
+        }
         try {
             socket.tcpNoDelay = true
             socket.keepAlive = true
-            socket.sendBufferSize = SEND_BUFFER_BYTES
+            socket.sendBufferSize = sendBufferBytes
             socket.receiveBufferSize = RECV_BUFFER_BYTES
         } catch (e: IOException) {
             logger.warn(TAG, "Failed configuring TCP socket options", e)
         }
     }
+
+    val sendBufferSize: Int
+        get() = socket.sendBufferSize
+
+    val tcpNoDelayEnabled: Boolean
+        get() = socket.tcpNoDelay
 
     override val remoteAddress: InetAddress
         get() = socket.inetAddress ?: IpLiterals.LOOPBACK_V4
@@ -61,15 +74,20 @@ class TcpPeerSocket(private val socket: Socket, private val logger: Logger) : Pe
         socket.close()
     }
 
-    private companion object {
-        const val TAG = "TcpPeerSocket"
-        const val SEND_BUFFER_BYTES = 256 * 1024
+    companion object {
+        private const val TAG = "TcpPeerSocket"
+        const val DEFAULT_SEND_BUFFER_BYTES = 64 * 1024
+        const val MIN_SEND_BUFFER_BYTES = 4 * 1024
         const val RECV_BUFFER_BYTES = 64 * 1024
     }
 }
 
-class TcpServerAcceptor(bindAddress: InetAddress, port: Int, private val logger: Logger) :
-    ServerAcceptor {
+class TcpServerAcceptor(
+    bindAddress: InetAddress,
+    port: Int,
+    private val logger: Logger,
+    private val sendBufferBytes: Int = TcpPeerSocket.DEFAULT_SEND_BUFFER_BYTES
+) : ServerAcceptor {
     private val serverSocket = ServerSocket().apply {
         reuseAddress = true
         bind(InetSocketAddress(bindAddress, port), BACKLOG)
@@ -81,7 +99,8 @@ class TcpServerAcceptor(bindAddress: InetAddress, port: Int, private val logger:
     override val isClosed: Boolean
         get() = serverSocket.isClosed
 
-    override fun accept(): PeerSocket = TcpPeerSocket(serverSocket.accept(), logger)
+    override fun accept(): PeerSocket =
+        TcpPeerSocket(serverSocket.accept(), logger, sendBufferBytes)
 
     override fun close() {
         try {
