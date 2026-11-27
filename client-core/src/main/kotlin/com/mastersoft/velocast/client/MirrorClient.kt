@@ -1,5 +1,6 @@
 package com.mastersoft.velocast.client
 
+import com.mastersoft.velocast.protocol.ControlPacket
 import com.mastersoft.velocast.protocol.ControlWriter
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
@@ -87,13 +88,16 @@ object TcpClientSocketConnector : ClientSocketConnector {
 }
 
 /**
- * Reusable protocol v2 [StreamTransport] backed by a dedicated reader coroutine and writer
- * coroutine attached to the caller's structured [CoroutineScope].
+ * Reusable protocol v2 [StreamTransport] backed by a dedicated reader coroutine, writer coroutine,
+ * and preallocated [FrameBufferPool] / [ControlPacketPool] rings (PERF-03).
  */
 class MirrorClient(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val socketConnector: ClientSocketConnector = TcpClientSocketConnector,
-    private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS
+    private val connectTimeoutMs: Long = DEFAULT_CONNECT_TIMEOUT_MS,
+    private val frameBufferPool: FrameBufferPool = FrameBufferPool(),
+    private val controlPacketPool: ControlPacketPool = ControlPacketPool(),
+    private val clock: SessionClock = SystemSessionClock
 ) : StreamTransport {
 
     private val connectMutex = Mutex()
@@ -127,7 +131,14 @@ class MirrorClient(
                     closeQuietly(socket)
                     throw IOException("Caller scope is inactive")
                 }
-                ActiveConnection(socket, scope, ioDispatcher).also {
+                ActiveConnection(
+                    socket = socket,
+                    parentScope = scope,
+                    ioDispatcher = ioDispatcher,
+                    frameBufferPool = frameBufferPool,
+                    controlPacketPool = controlPacketPool,
+                    clock = clock
+                ).also {
                     activeConnection = it
                 }
             }
@@ -153,6 +164,11 @@ class MirrorClient(
         conn.writeControl(command)
     }
 
+    override suspend fun writeControlPacket(packet: ControlPacket) {
+        val conn = activeConnection ?: throw IOException("Transport not connected")
+        conn.writeControlPacket(packet)
+    }
+
     override suspend fun close() {
         val conn = connectMutex.withLock {
             activeConnection.also { activeConnection = null }
@@ -165,13 +181,12 @@ class MirrorClient(
     }
 }
 
-private sealed interface ReadOutcome {
-    data class Frame(val frame: ReceivedFrame) : ReadOutcome
-    data object Eof : ReadOutcome
-    data class Failure(val error: Exception) : ReadOutcome
+private sealed interface ReadSignal {
+    data object Eof : ReadSignal
+    data class Failure(val error: Exception) : ReadSignal
 }
 
-private sealed interface WriteRequest {
+private sealed interface WriteRequest : OutboundWriteItem {
     val done: CompletableDeferred<Unit>
 
     fun failClosed() {
@@ -188,16 +203,38 @@ private sealed interface WriteRequest {
 private class ActiveConnection(
     private val socket: ClientSocket,
     parentScope: CoroutineScope,
-    private val ioDispatcher: CoroutineDispatcher
+    private val ioDispatcher: CoroutineDispatcher,
+    frameBufferPool: FrameBufferPool,
+    private val controlPacketPool: ControlPacketPool,
+    clock: SessionClock
 ) {
     private val connectionJob = Job(parentScope.coroutineContext[Job])
     private val connectionScope = CoroutineScope(parentScope.coroutineContext + connectionJob)
     private val closing = AtomicBoolean(false)
     private val sessionPhaseGate = CompletableDeferred<Unit>()
-    private val incomingFrames = Channel<ReadOutcome>(capacity = INCOMING_CAPACITY)
-    private val outgoingRequests = Channel<WriteRequest>(
+    private val incomingFrames = Channel<Any>(
+        capacity = INCOMING_CAPACITY,
+        onUndeliveredElement = { item ->
+            if (item is ReceivedFrame) item.release()
+        }
+    )
+    private val outgoingRequests = Channel<OutboundWriteItem>(
         capacity = OUTGOING_CAPACITY,
-        onUndeliveredElement = { it.failClosed() }
+        onUndeliveredElement = { item -> releaseUndeliveredOutbound(item) }
+    )
+
+    private val inboundReader = InboundFrameReader(
+        socket = socket,
+        closing = closing,
+        sessionPhaseGate = sessionPhaseGate,
+        incomingFrames = incomingFrames,
+        frameBufferPool = frameBufferPool,
+        clock = clock
+    )
+
+    private val outboundWriter = OutboundControlWriter(
+        socket = socket,
+        outgoingRequests = outgoingRequests
     )
 
     init {
@@ -213,8 +250,8 @@ private class ActiveConnection(
         connectionScope.launch(start = CoroutineStart.UNDISPATCHED) {
             watchCancellation()
         }
-        connectionScope.launch(ioDispatcher) { runReader() }
-        connectionScope.launch(ioDispatcher) { runWriter() }
+        connectionScope.launch(ioDispatcher) { inboundReader.run() }
+        connectionScope.launch(ioDispatcher) { outboundWriter.run() }
     }
 
     private suspend fun watchCancellation() {
@@ -241,19 +278,29 @@ private class ActiveConnection(
         }
     }
 
-    suspend fun readFrame(): ReceivedFrame? {
-        val outcome = incomingFrames.receiveCatching().getOrNull() ?: return null
-        return when (outcome) {
-            is ReadOutcome.Frame -> outcome.frame
-            is ReadOutcome.Eof -> null
-            is ReadOutcome.Failure -> throw outcome.error
+    suspend fun readFrame(): ReceivedFrame? =
+        when (val item = incomingFrames.receiveCatching().getOrNull()) {
+            null, ReadSignal.Eof -> null
+            is ReceivedFrame -> item
+            is ReadSignal.Failure -> throw item.error
+            else -> null
         }
-    }
 
     suspend fun writeControl(command: ControlCommand) {
         val done = CompletableDeferred<Unit>()
         enqueueWrite(WriteRequest.Command(command, done))
         done.await()
+    }
+
+    suspend fun writeControlPacket(packet: ControlPacket) {
+        val slot = controlPacketPool.acquire()
+        slot.copyFrom(packet)
+        try {
+            outgoingRequests.send(slot)
+        } catch (e: ClosedSendChannelException) {
+            slot.release()
+            throw IOException("Transport closed", e)
+        }
     }
 
     suspend fun shutdown() {
@@ -264,6 +311,10 @@ private class ActiveConnection(
             outgoingRequests.close()
             connectionJob.cancel()
             connectionJob.join()
+            while (true) {
+                val item = incomingFrames.tryReceive().getOrNull() ?: break
+                if (item is ReceivedFrame) item.release()
+            }
         }
     }
 
@@ -276,19 +327,29 @@ private class ActiveConnection(
         }
     }
 
-    private suspend fun runReader() {
+    private companion object {
+        const val INCOMING_CAPACITY = 8
+        const val OUTGOING_CAPACITY = 64
+    }
+}
+
+private class InboundFrameReader(
+    private val socket: ClientSocket,
+    private val closing: AtomicBoolean,
+    private val sessionPhaseGate: CompletableDeferred<Unit>,
+    private val incomingFrames: Channel<Any>,
+    private val frameBufferPool: FrameBufferPool,
+    private val clock: SessionClock
+) {
+    suspend fun run() {
         val reader = FrameReader(BufferedInputStream(socket.inputStream, READ_BUFFER_BYTES))
         val header = FrameHeader()
         try {
             readLoop(reader, header)
         } catch (e: ProtocolException) {
-            if (!closing.get()) {
-                incomingFrames.send(ReadOutcome.Failure(e))
-            }
+            if (!closing.get()) incomingFrames.send(ReadSignal.Failure(e))
         } catch (e: IOException) {
-            if (!closing.get()) {
-                incomingFrames.send(ReadOutcome.Failure(e))
-            }
+            if (!closing.get()) incomingFrames.send(ReadSignal.Failure(e))
         } finally {
             incomingFrames.close()
         }
@@ -301,22 +362,18 @@ private class ActiveConnection(
             }
             val hasNext = reader.readHeader(header)
             if (!hasNext) {
-                incomingFrames.send(ReadOutcome.Eof)
+                incomingFrames.send(ReadSignal.Eof)
                 break
             }
-            val length = reader.readPayload(header)
-            val payload = reader.payload.copyOf(length)
-            val frame = ReceivedFrame(
-                type = header.type,
-                flags = header.flags,
-                seq = header.seq,
-                ptsUs = header.ptsUs,
-                captureUs = header.captureUs,
-                payload = payload
-            )
+            val frame = readFramePayload(reader, header)
             val waitForSessionPhase =
                 reader.phase == Phase.HANDSHAKE && header.type == MessageType.AUTH_PROOF
-            incomingFrames.send(ReadOutcome.Frame(frame))
+            try {
+                incomingFrames.send(frame)
+            } catch (e: ClosedSendChannelException) {
+                frame.release()
+                throw IOException("Incoming frame channel closed", e)
+            }
             if (waitForSessionPhase) {
                 sessionPhaseGate.await()
                 reader.phase = Phase.SESSION
@@ -324,19 +381,85 @@ private class ActiveConnection(
         }
     }
 
-    private suspend fun runWriter() {
+    private fun readFramePayload(reader: FrameReader, header: FrameHeader): ReceivedFrame {
+        if (header.type == MessageType.VIDEO) {
+            val pooled = frameBufferPool.acquireVideoFrame(header.length)
+            try {
+                reader.readPayload(header, pooled.payload, 0)
+            } catch (e: ProtocolException) {
+                pooled.release()
+                throw e
+            } catch (e: IOException) {
+                pooled.release()
+                throw e
+            }
+            pooled.updateHeader(
+                type = header.type,
+                flags = header.flags,
+                seq = header.seq,
+                ptsUs = header.ptsUs,
+                captureUs = header.captureUs,
+                receivedAtUs = clock.monotonicMicros()
+            )
+            return pooled
+        }
+        val length = reader.readPayload(header)
+        return ReceivedFrame(
+            type = header.type,
+            flags = header.flags,
+            seq = header.seq,
+            ptsUs = header.ptsUs,
+            captureUs = header.captureUs,
+            payload = reader.payload.copyOf(length),
+            payloadLength = length,
+            receivedAtUs = clock.monotonicMicros()
+        )
+    }
+
+    private companion object {
+        const val READ_BUFFER_BYTES = 256 * 1024
+    }
+}
+
+private class OutboundControlWriter(
+    private val socket: ClientSocket,
+    private val outgoingRequests: Channel<OutboundWriteItem>
+) {
+    suspend fun run() {
         val out = socket.outputStream
         val writer = ControlWriter(out)
         try {
-            for (request in outgoingRequests) {
-                handleWriteRequest(writer, out, request)
+            for (item in outgoingRequests) {
+                when (item) {
+                    is PooledControlSlot -> handlePooledControlWrite(writer, out, item)
+                    is WriteRequest -> handleWriteRequest(writer, out, item)
+                }
             }
         } finally {
             outgoingRequests.close()
             while (true) {
                 val leftover = outgoingRequests.tryReceive().getOrNull() ?: break
-                leftover.failClosed()
+                releaseUndeliveredOutbound(leftover)
             }
+        }
+    }
+
+    private fun handlePooledControlWrite(
+        writer: ControlWriter,
+        out: OutputStream,
+        slot: PooledControlSlot
+    ) {
+        try {
+            slot.packet.seq = writer.nextSeq
+            writer.write(slot.packet)
+            writer.nextSeq = (writer.nextSeq + 1) and SEQ_MASK
+            out.flush()
+        } catch (_: ProtocolException) {
+            closeQuietly(socket)
+        } catch (_: IOException) {
+            closeQuietly(socket)
+        } finally {
+            slot.release()
         }
     }
 
@@ -367,9 +490,14 @@ private class ActiveConnection(
     }
 
     private companion object {
-        const val INCOMING_CAPACITY = 32
-        const val OUTGOING_CAPACITY = 64
-        const val READ_BUFFER_BYTES = 256 * 1024
+        const val SEQ_MASK = 0xFFFF
+    }
+}
+
+private fun releaseUndeliveredOutbound(item: OutboundWriteItem) {
+    when (item) {
+        is PooledControlSlot -> item.release()
+        is WriteRequest -> item.failClosed()
     }
 }
 
