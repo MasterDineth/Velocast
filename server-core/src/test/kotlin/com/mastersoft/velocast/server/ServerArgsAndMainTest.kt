@@ -1,11 +1,14 @@
 package com.mastersoft.velocast.server
 
+import com.mastersoft.velocast.protocol.AuthMode
 import com.mastersoft.velocast.protocol.AuthRole
 import com.mastersoft.velocast.protocol.ClientHandshake
 import com.mastersoft.velocast.protocol.ControlWriter
 import com.mastersoft.velocast.protocol.DeviceInfo
+import com.mastersoft.velocast.protocol.Features
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.Pong
@@ -38,6 +41,7 @@ class ServerArgsAndMainTest {
                 "--bind", "loopback",
                 "--state-dir", "build/test-state",
                 "--secret-from-stdin",
+                "--auth-mode", "pairing",
                 "--log-level", "debug"
             )
         )
@@ -45,6 +49,7 @@ class ServerArgsAndMainTest {
         assertEquals(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), parsed.bindAddress)
         assertEquals("test-state", parsed.stateDir?.fileName?.toString())
         assertTrue(parsed.secretFromStdin)
+        assertEquals(AuthMode.PAIRING_SECRET, parsed.authMode)
         assertEquals(LogLevel.DEBUG, parsed.logLevel)
 
         val ipv6 = ServerArgs.parse(arrayOf("--bind", "::1"))
@@ -90,9 +95,9 @@ class ServerArgsAndMainTest {
     }
 
     @Test
-    fun hmacAuthenticatorMatchesGoldenVectorAndRedactsToString() {
+    fun hkdfAuthenticatorSignsTranscriptHashAndRedactsToString() {
         val key = ByteArray(32) { it.toByte() }
-        val auth = HmacSha256Authenticator(key)
+        val auth = HkdfAuthenticator(key, AuthMode.PAIRING_SECRET)
         assertFalse(auth.toString().contains("00"))
 
         val hello = byteArrayOf(
@@ -144,7 +149,7 @@ class ServerArgsAndMainTest {
                 secretFromStdin = true,
                 logLevel = LogLevel.DEBUG
             ),
-            authenticator = HmacSha256Authenticator(secret),
+            authenticator = HkdfAuthenticator(secret),
             environment = env,
             clock = clock,
             logger = logger,
@@ -179,8 +184,8 @@ class ServerArgsAndMainTest {
             val cw = ControlWriter(clientSocket.getOutputStream())
             val fr = FrameReader(clientSocket.getInputStream())
             val client = ClientHandshake(
-                HmacSha256Authenticator(secret),
-                0,
+                HkdfAuthenticator(secret),
+                Features.SECURE_CHANNEL,
                 TestClientDriver.CLIENT_NONCE
             )
 
@@ -197,6 +202,13 @@ class ServerArgsAndMainTest {
             fr.readPayload(h)
             client.onServerProof(fr.payload, 0, h.length)
 
+            val keys = checkNotNull(client.deriveSessionKeys())
+            try {
+                cw.cipher = keys.newClientOutboundCipher()
+                fr.cipher = keys.newClientInboundCipher()
+            } finally {
+                keys.close()
+            }
             cw.phase = Phase.SESSION
             fr.phase = Phase.SESSION
 

@@ -224,9 +224,11 @@ class ServerSession(
         var established = false
         if (serverProof != null) {
             if (onActivate(this)) {
-                frameSink.writeMessage(serverProof)
-                controlReader.phase = Phase.SESSION
-                frameSink.activateSession(
+                SessionIoHelpers.activateAuthenticatedStreams(
+                    serverProof = serverProof,
+                    handshake = handshake,
+                    controlReader = controlReader,
+                    frameSink = frameSink,
                     sessionId = id,
                     logger = logger,
                     onWriteError = { requestClose() }
@@ -396,6 +398,8 @@ class ServerSession(
         SessionIoHelpers.closeQuietly(pipeline, "media pipeline", id, logger)
         SessionIoHelpers.restoreDeviceState(controller, savedState, guardian, id, logger)
         frameSink.flushAndClose()
+        controlReader.cipher?.close()
+        controlReader.cipher = null
         SessionIoHelpers.closeQuietly(peerSocket, "peer socket", id, logger)
         onClosed(this)
         closedLatch.countDown()
@@ -592,6 +596,37 @@ private object SessionCommandHelpers {
 private object SessionIoHelpers {
     private const val TAG = "ServerSession"
 
+    @Suppress("LongParameterList")
+    fun activateAuthenticatedStreams(
+        serverProof: AuthProof,
+        handshake: ServerHandshake,
+        controlReader: ControlReader,
+        frameSink: SessionFrameSink,
+        sessionId: Long,
+        logger: Logger,
+        onWriteError: () -> Unit
+    ) {
+        frameSink.writeMessage(serverProof)
+        val sessionKeys = handshake.deriveSessionKeys()
+        val outboundCipher = try {
+            if (sessionKeys != null) {
+                controlReader.cipher = sessionKeys.newServerInboundCipher()
+                sessionKeys.newServerOutboundCipher()
+            } else {
+                null
+            }
+        } finally {
+            sessionKeys?.close()
+        }
+        controlReader.phase = Phase.SESSION
+        frameSink.activateSession(
+            sessionId = sessionId,
+            logger = logger,
+            cipher = outboundCipher,
+            onWriteError = { onWriteError() }
+        )
+    }
+
     fun recordFailureOnce(
         recorded: AtomicBoolean,
         address: InetAddress,
@@ -646,7 +681,7 @@ private object SessionIoHelpers {
         logger: Logger
     ) {
         try {
-            val safeDetail = truncateErrorDetail(detail)
+            val safeDetail = truncateErrorDetail(logger.redactor.redact(detail))
             frameSink.writeMessage(ErrorMessage(code, true, safeDetail))
         } catch (e: IOException) {
             logger.debug(TAG, "Failed sending ERROR ($code) on session $sessionId", e)

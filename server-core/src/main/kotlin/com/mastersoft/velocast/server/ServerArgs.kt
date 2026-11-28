@@ -1,15 +1,18 @@
 package com.mastersoft.velocast.server
 
+import com.mastersoft.velocast.protocol.AuthMode
 import com.mastersoft.velocast.protocol.ProtocolV2
 import java.net.InetAddress
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.Locale
 
 data class ServerArgs(
     val port: Int = ProtocolV2.DEFAULT_PORT,
     val bindAddress: InetAddress = IpLiterals.LOOPBACK_V4,
     val stateDir: Path? = null,
     val secretFromStdin: Boolean = false,
+    val authMode: AuthMode = AuthMode.SESSION_SECRET,
     val logLevel: LogLevel = LogLevel.INFO,
     val bitrateMode: BitrateMode = BitrateMode.DEFAULT,
     val sendBufferBytes: Int = TcpPeerSocket.DEFAULT_SEND_BUFFER_BYTES
@@ -22,6 +25,7 @@ data class ServerArgs(
             var bindAddress = IpLiterals.LOOPBACK_V4
             var stateDir: Path? = null
             var secretFromStdin = false
+            var authMode = AuthMode.SESSION_SECRET
             var logLevel = LogLevel.INFO
             var bitrateMode = BitrateMode.DEFAULT
             var sendBufferBytes = TcpPeerSocket.DEFAULT_SEND_BUFFER_BYTES
@@ -40,6 +44,8 @@ data class ServerArgs(
                     }
 
                     "--secret-from-stdin" -> secretFromStdin = true
+
+                    "--auth-mode" -> authMode = parseAuthMode(nextArgValue(args, index++, flag))
 
                     "--log-level" -> {
                         val raw = nextArgValue(args, index++, flag)
@@ -65,11 +71,19 @@ data class ServerArgs(
                 bindAddress = bindAddress,
                 stateDir = stateDir,
                 secretFromStdin = secretFromStdin,
+                authMode = authMode,
                 logLevel = logLevel,
                 bitrateMode = bitrateMode,
                 sendBufferBytes = sendBufferBytes
             )
         }
+
+        private fun parseAuthMode(raw: String): AuthMode =
+            when (raw.trim().lowercase(Locale.ROOT)) {
+                "session", "session_secret" -> AuthMode.SESSION_SECRET
+                "pairing", "pairing_secret" -> AuthMode.PAIRING_SECRET
+                else -> throw IllegalArgumentException("Invalid --auth-mode value: $raw")
+            }
 
         private fun parseSendBufferBytes(raw: String): Int {
             val parsed = raw.toIntOrNull()

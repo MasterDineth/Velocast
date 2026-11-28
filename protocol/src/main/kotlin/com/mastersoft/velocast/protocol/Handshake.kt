@@ -91,6 +91,11 @@ class ClientHandshake(
             serverHello = reply
             negotiatedVersion = reply.version
             negotiatedFeatures = features and reply.capabilities
+            if (authenticator.requiresSecureChannel &&
+                (negotiatedFeatures and Features.SECURE_CHANNEL) == 0
+            ) {
+                fail(ErrorCode.AUTH_FAILED, "server did not negotiate SECURE_CHANNEL")
+            }
             val transcript = Transcript.build(
                 AuthRole.CLIENT,
                 helloMessage.encode(),
@@ -114,6 +119,15 @@ class ClientHandshake(
             }
             state = HandshakeState.ESTABLISHED
         }
+    }
+
+    /** Derives directional AEAD keys once [state] is [HandshakeState.ESTABLISHED]. */
+    fun deriveSessionKeys(): SessionKeys? {
+        if (state != HandshakeState.ESTABLISHED) {
+            fail(ErrorCode.UNEXPECTED_MESSAGE, "cannot derive session keys before ESTABLISHED")
+        }
+        val reply = serverHello ?: fail(ErrorCode.UNEXPECTED_MESSAGE, "missing SERVER_HELLO")
+        return authenticator.deriveSessionKeys(helloMessage.nonce, reply.nonce)
     }
 }
 
@@ -143,12 +157,22 @@ class ServerHandshake(
                 fail(ErrorCode.VERSION_MISMATCH, "client version ${hello.version} is too old")
             }
             val version = minOf(hello.version, ProtocolV2.VERSION)
-            val reply = ServerHello(version, capabilities, nonce)
+            val effectiveCapabilities = if (authenticator.requiresSecureChannel) {
+                capabilities or Features.SECURE_CHANNEL
+            } else {
+                capabilities
+            }
+            val reply = ServerHello(version, effectiveCapabilities, nonce)
             helloPayload = payload.copyOfRange(offset, offset + length)
             serverHelloPayload = reply.encode()
             clientHello = hello
             negotiatedVersion = version
-            negotiatedFeatures = hello.features and capabilities
+            negotiatedFeatures = hello.features and effectiveCapabilities
+            if (authenticator.requiresSecureChannel &&
+                (negotiatedFeatures and Features.SECURE_CHANNEL) == 0
+            ) {
+                fail(ErrorCode.AUTH_FAILED, "client did not offer SECURE_CHANNEL")
+            }
             state = HandshakeState.AWAIT_CLIENT_PROOF
             reply
         }
@@ -176,4 +200,13 @@ class ServerHandshake(
             state = HandshakeState.ESTABLISHED
             AuthProof(authenticator.computeProof(serverTranscript))
         }
+
+    /** Derives directional AEAD keys once [state] is [HandshakeState.ESTABLISHED]. */
+    fun deriveSessionKeys(): SessionKeys? {
+        if (state != HandshakeState.ESTABLISHED) {
+            fail(ErrorCode.UNEXPECTED_MESSAGE, "cannot derive session keys before ESTABLISHED")
+        }
+        val hello = clientHello ?: fail(ErrorCode.UNEXPECTED_MESSAGE, "missing client HELLO")
+        return authenticator.deriveSessionKeys(hello.nonce, nonce)
+    }
 }

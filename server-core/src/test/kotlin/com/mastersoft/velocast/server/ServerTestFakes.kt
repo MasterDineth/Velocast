@@ -6,9 +6,11 @@ import com.mastersoft.velocast.protocol.ControlWriter
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.DisplayGeometry
 import com.mastersoft.velocast.protocol.ErrorCode
+import com.mastersoft.velocast.protocol.Features
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
 import com.mastersoft.velocast.protocol.FrameWriter
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.LaunchMode
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
@@ -501,13 +503,13 @@ internal object TestClientDriver {
     fun authenticate(
         socket: FakePeerSocket,
         secret: ByteArray = DEFAULT_SECRET,
-        features: Int = 0
+        features: Int = Features.SECURE_CHANNEL
     ): Pair<ControlWriter, FrameReader> {
         val cw = ControlWriter(socket.clientOut)
         val fr = FrameReader(socket.clientIn)
         val client = com.mastersoft.velocast.protocol.ClientHandshake(
-            HmacSha256Authenticator(secret),
-            features,
+            HkdfAuthenticator(secret),
+            features or Features.SECURE_CHANNEL,
             CLIENT_NONCE
         )
         cw.writePayload(client.hello())
@@ -526,6 +528,13 @@ internal object TestClientDriver {
         check(h.type == MessageType.AUTH_PROOF) { "Expected AUTH_PROOF, got ${h.type}" }
         client.onServerProof(fr.payload, 0, h.length)
 
+        val keys = checkNotNull(client.deriveSessionKeys()) { "Expected derived session keys" }
+        try {
+            cw.cipher = keys.newClientOutboundCipher()
+            fr.cipher = keys.newClientInboundCipher()
+        } finally {
+            keys.close()
+        }
         cw.phase = Phase.SESSION
         fr.phase = Phase.SESSION
 

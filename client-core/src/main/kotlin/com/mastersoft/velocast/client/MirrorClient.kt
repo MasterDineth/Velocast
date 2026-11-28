@@ -7,6 +7,7 @@ import com.mastersoft.velocast.protocol.FrameReader
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.ProtocolException
+import com.mastersoft.velocast.protocol.SessionCipher
 import java.io.BufferedInputStream
 import java.io.Closeable
 import java.io.IOException
@@ -149,6 +150,18 @@ class MirrorClient(
         connection.start()
     }
 
+    override suspend fun installSessionCiphers(
+        inboundCipher: SessionCipher,
+        outboundCipher: SessionCipher
+    ) {
+        val conn = activeConnection ?: run {
+            inboundCipher.close()
+            outboundCipher.close()
+            throw IOException("Transport not connected")
+        }
+        conn.installSessionCiphers(inboundCipher, outboundCipher)
+    }
+
     override suspend fun setPhase(phase: Phase) {
         val conn = activeConnection ?: throw IOException("Transport not connected")
         conn.setPhase(phase)
@@ -193,6 +206,14 @@ private sealed interface WriteRequest : OutboundWriteItem {
         done.completeExceptionally(IOException("Transport closed"))
     }
 
+    data class SetCipher(val cipher: SessionCipher, override val done: CompletableDeferred<Unit>) :
+        WriteRequest {
+        override fun failClosed() {
+            cipher.close()
+            super.failClosed()
+        }
+    }
+
     data class SetPhase(val phase: Phase, override val done: CompletableDeferred<Unit>) :
         WriteRequest
 
@@ -212,6 +233,10 @@ private class ActiveConnection(
     private val connectionScope = CoroutineScope(parentScope.coroutineContext + connectionJob)
     private val closing = AtomicBoolean(false)
     private val sessionPhaseGate = CompletableDeferred<Unit>()
+
+    @Volatile
+    private var pendingInboundCipher: SessionCipher? = null
+
     private val incomingFrames = Channel<Any>(
         capacity = INCOMING_CAPACITY,
         onUndeliveredElement = { item ->
@@ -227,6 +252,7 @@ private class ActiveConnection(
         socket = socket,
         closing = closing,
         sessionPhaseGate = sessionPhaseGate,
+        inboundCipherProvider = { pendingInboundCipher },
         incomingFrames = incomingFrames,
         frameBufferPool = frameBufferPool,
         clock = clock
@@ -241,6 +267,7 @@ private class ActiveConnection(
         connectionJob.invokeOnCompletion {
             closing.set(true)
             closeQuietly(socket)
+            pendingInboundCipher?.close()
             sessionPhaseGate.cancel()
             outgoingRequests.close()
         }
@@ -267,6 +294,13 @@ private class ActiveConnection(
         } catch (_: CancellationException) {
             // Normal connection teardown.
         }
+    }
+
+    suspend fun installSessionCiphers(inboundCipher: SessionCipher, outboundCipher: SessionCipher) {
+        pendingInboundCipher = inboundCipher
+        val done = CompletableDeferred<Unit>()
+        enqueueWrite(WriteRequest.SetCipher(outboundCipher, done))
+        done.await()
     }
 
     suspend fun setPhase(phase: Phase) {
@@ -307,6 +341,7 @@ private class ActiveConnection(
         withContext(NonCancellable) {
             closing.set(true)
             closeQuietly(socket)
+            pendingInboundCipher?.close()
             sessionPhaseGate.cancel()
             outgoingRequests.close()
             connectionJob.cancel()
@@ -337,6 +372,7 @@ private class InboundFrameReader(
     private val socket: ClientSocket,
     private val closing: AtomicBoolean,
     private val sessionPhaseGate: CompletableDeferred<Unit>,
+    private val inboundCipherProvider: () -> SessionCipher?,
     private val incomingFrames: Channel<Any>,
     private val frameBufferPool: FrameBufferPool,
     private val clock: SessionClock
@@ -351,6 +387,8 @@ private class InboundFrameReader(
         } catch (e: IOException) {
             if (!closing.get()) incomingFrames.send(ReadSignal.Failure(e))
         } finally {
+            reader.cipher?.close()
+            reader.cipher = null
             incomingFrames.close()
         }
     }
@@ -358,6 +396,7 @@ private class InboundFrameReader(
     private suspend fun readLoop(reader: FrameReader, header: FrameHeader) {
         while (currentCoroutineContext().isActive && !closing.get()) {
             if (reader.phase == Phase.HANDSHAKE && sessionPhaseGate.isCompleted) {
+                reader.cipher = inboundCipherProvider()
                 reader.phase = Phase.SESSION
             }
             val hasNext = reader.readHeader(header)
@@ -376,6 +415,7 @@ private class InboundFrameReader(
             }
             if (waitForSessionPhase) {
                 sessionPhaseGate.await()
+                reader.cipher = inboundCipherProvider()
                 reader.phase = Phase.SESSION
             }
         }
@@ -436,6 +476,8 @@ private class OutboundControlWriter(
                 }
             }
         } finally {
+            writer.cipher?.close()
+            writer.cipher = null
             outgoingRequests.close()
             while (true) {
                 val leftover = outgoingRequests.tryReceive().getOrNull() ?: break
@@ -469,6 +511,12 @@ private class OutboundControlWriter(
         request: WriteRequest
     ) {
         when (request) {
+            is WriteRequest.SetCipher -> {
+                writer.cipher?.close()
+                writer.cipher = request.cipher
+                request.done.complete(Unit)
+            }
+
             is WriteRequest.SetPhase -> {
                 writer.phase = request.phase
                 request.done.complete(Unit)

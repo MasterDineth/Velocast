@@ -1,6 +1,7 @@
 package com.mastersoft.velocast.server
 
 import android.os.Looper
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.server.platform.VirtualDisplayBridge
 import java.io.IOException
 
@@ -35,7 +36,8 @@ object Main {
 
         val secret = SecretReader.readHexLine(System.`in`)
         val authenticator = try {
-            HmacSha256Authenticator(secret)
+            logger.redactor.registerSecret(secret)
+            HkdfAuthenticator(secret, parsedArgs.authMode)
         } finally {
             secret.fill(0)
         }
@@ -58,6 +60,7 @@ object Main {
         Runtime.getRuntime().addShutdownHook(
             Thread({
                 runner.close()
+                authenticator.close()
                 logger.close()
             }, "velocast-shutdown")
         )
@@ -69,6 +72,7 @@ object Main {
             throw e
         } finally {
             runner.close()
+            authenticator.close()
             logger.close()
         }
     }

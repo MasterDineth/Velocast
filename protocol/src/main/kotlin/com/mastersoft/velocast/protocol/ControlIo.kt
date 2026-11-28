@@ -23,6 +23,16 @@ class ControlReader(
     /** Starts in [Phase.HANDSHAKE]; switch to [Phase.SESSION] once authentication succeeded. */
     var phase: Phase = Phase.HANDSHAKE
 
+    /** Optional AEAD cipher enabled upon entering [Phase.SESSION] (`Features.SECURE_CHANNEL`). */
+    var cipher: SessionCipher? = null
+        set(value) {
+            field = value
+            aeadReader = value?.let {
+                AeadRecordReader(input, it, ProtocolV2.CONTROL_PACKET_SIZE + maxPayload)
+            }
+        }
+
+    private var aeadReader: AeadRecordReader? = null
     private val headerBytes = ByteArray(ProtocolV2.CONTROL_PACKET_SIZE)
     private val buffer = GrowingBuffer()
 
@@ -41,6 +51,10 @@ class ControlReader(
      * Reads and validates the next packet into [packet]. Returns false on a clean end of stream.
      */
     fun read(packet: ControlPacket): Boolean {
+        val recordReader = aeadReader
+        if (recordReader != null && phase == Phase.SESSION) {
+            return readEncryptedControl(recordReader, packet)
+        }
         val got = StreamIo.readFully(
             input,
             headerBytes,
@@ -53,6 +67,46 @@ class ControlReader(
             if (!spec.isEmpty) readPayload(packet, spec)
         }
         return got
+    }
+
+    private fun readEncryptedControl(
+        recordReader: AeadRecordReader,
+        packet: ControlPacket
+    ): Boolean {
+        val recordLen = recordReader.readDataRecord()
+        if (recordLen < 0) return false
+        if (recordLen < ProtocolV2.CONTROL_PACKET_SIZE) {
+            fail(ErrorCode.MALFORMED_MESSAGE, "Encrypted C2S record shorter than control packet")
+        }
+        recordReader.plaintext.copyInto(headerBytes, 0, 0, ProtocolV2.CONTROL_PACKET_SIZE)
+        val spec = decode(packet)
+        if (spec.isEmpty) {
+            if (recordLen != ProtocolV2.CONTROL_PACKET_SIZE) {
+                fail(ErrorCode.MALFORMED_MESSAGE, "${packet.type} unexpected trailing bytes")
+            }
+        } else {
+            readEncryptedPayload(recordReader, recordLen, packet, spec)
+        }
+        return true
+    }
+
+    private fun readEncryptedPayload(
+        recordReader: AeadRecordReader,
+        recordLen: Int,
+        p: ControlPacket,
+        spec: PayloadSpec
+    ) {
+        val length = p.param
+        if (length < spec.min) fail(ErrorCode.MALFORMED_MESSAGE, "${p.type} payload too short")
+        if (length > minOf(spec.max, ControlRules.limit(phase, maxPayload))) {
+            fail(ErrorCode.MESSAGE_TOO_LARGE, "${p.type} payload length $length exceeds the limit")
+        }
+        if (ProtocolV2.CONTROL_PACKET_SIZE + length != recordLen) {
+            fail(ErrorCode.MALFORMED_MESSAGE, "${p.type} encrypted length mismatch")
+        }
+        buffer.copyFrom(recordReader.plaintext, ProtocolV2.CONTROL_PACKET_SIZE, length)
+        p.payloadLength = length
+        checkContent(p)
     }
 
     private fun decode(p: ControlPacket): PayloadSpec {
@@ -116,9 +170,17 @@ class ControlWriter(private val out: OutputStream) {
     /** Starts in [Phase.HANDSHAKE]; only HELLO, AUTH_PROOF and BYE can be written. */
     var phase: Phase = Phase.HANDSHAKE
 
+    /** Optional AEAD cipher enabled upon entering [Phase.SESSION] (`Features.SECURE_CHANNEL`). */
+    var cipher: SessionCipher? = null
+        set(value) {
+            field = value
+            aeadWriter = value?.let { AeadRecordWriter(out, it) }
+        }
+
     /** Sequence number the next packet gets. */
     var nextSeq: Int = 0
 
+    private var aeadWriter: AeadRecordWriter? = null
     private val buffer = ByteArray(SCRATCH_SIZE)
     private val packet = ControlPacket()
 
@@ -168,8 +230,8 @@ class ControlWriter(private val out: OutputStream) {
             )
         }
         ControlRules.validate(p)
-        encodeHeader(p.type.id, p.pointer, p.seq, p.param, p.x, p.y, buffer)
-        out.write(buffer, 0, ProtocolV2.CONTROL_PACKET_SIZE)
+        encodeControlHeader(p.type.id, p.pointer, p.seq, p.param, p.x, p.y, buffer)
+        writeBytes(buffer, ProtocolV2.CONTROL_PACKET_SIZE)
     }
 
     /** Writes HELLO, AUTH_PROOF, TEXT or CLIPBOARD: header and payload in a single write. */
@@ -189,9 +251,18 @@ class ControlWriter(private val out: OutputStream) {
             ByteArray(ProtocolV2.CONTROL_PACKET_SIZE + size)
         }
         msg.encodeTo(frame, ProtocolV2.CONTROL_PACKET_SIZE)
-        encodeHeader(msg.type.id, 0, nextSeq, size, 0f, 0f, frame)
-        out.write(frame, 0, ProtocolV2.CONTROL_PACKET_SIZE + size)
+        encodeControlHeader(msg.type.id, 0, nextSeq, size, 0f, 0f, frame)
+        writeBytes(frame, ProtocolV2.CONTROL_PACKET_SIZE + size)
         nextSeq = (nextSeq + 1) and SEQ_MASK
+    }
+
+    private fun writeBytes(frame: ByteArray, length: Int) {
+        val recordWriter = aeadWriter
+        if (recordWriter != null && phase == Phase.SESSION) {
+            recordWriter.writeData(frame, 0, length)
+        } else {
+            out.write(frame, 0, length)
+        }
     }
 
     private fun writePacket(type: MessageType, pointer: Int, param: Int, x: Float, y: Float) {
@@ -205,25 +276,26 @@ class ControlWriter(private val out: OutputStream) {
         nextSeq = (nextSeq + 1) and SEQ_MASK
     }
 
-    private fun encodeHeader(
-        typeId: Int,
-        pointer: Int,
-        seq: Int,
-        param: Int,
-        x: Float,
-        y: Float,
-        dest: ByteArray
-    ) {
-        BigEndian.putU8(dest, OFF_TYPE, typeId)
-        BigEndian.putU8(dest, OFF_POINTER, pointer)
-        BigEndian.putU16(dest, OFF_SEQ, seq)
-        BigEndian.putI32(dest, OFF_PARAM, param)
-        BigEndian.putF32(dest, OFF_X, x)
-        BigEndian.putF32(dest, OFF_Y, y)
-    }
-
     private companion object {
         const val SCRATCH_SIZE = 272
         const val SEQ_MASK = 0xFFFF
     }
+}
+
+@Suppress("LongParameterList")
+private fun encodeControlHeader(
+    typeId: Int,
+    pointer: Int,
+    seq: Int,
+    param: Int,
+    x: Float,
+    y: Float,
+    dest: ByteArray
+) {
+    BigEndian.putU8(dest, OFF_TYPE, typeId)
+    BigEndian.putU8(dest, OFF_POINTER, pointer)
+    BigEndian.putU16(dest, OFF_SEQ, seq)
+    BigEndian.putI32(dest, OFF_PARAM, param)
+    BigEndian.putF32(dest, OFF_X, x)
+    BigEndian.putF32(dest, OFF_Y, y)
 }

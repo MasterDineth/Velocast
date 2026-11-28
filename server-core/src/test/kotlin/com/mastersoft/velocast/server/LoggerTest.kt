@@ -88,4 +88,51 @@ class LoggerTest {
             tempDir.toFile().deleteRecursively()
         }
     }
+
+    @Test
+    fun redactsSecretsInMessagesStackTracesStderrAndLogFile() {
+        val capturedErr = ByteArrayOutputStream()
+        val tempDir = Files.createTempDirectory("velocast-logger-redact-test")
+        val logPath = tempDir.resolve("server.log")
+        val rawSecret = ByteArray(32) { (0x20 + it).toByte() }
+        val rawB64 = java.util.Base64.getEncoder().encodeToString(rawSecret)
+        val rawHex = rawSecret.joinToString("") { "%02x".format(it) }
+
+        try {
+            Logger(
+                minLevel = LogLevel.DEBUG,
+                logFile = logPath,
+                stderr = PrintStream(capturedErr)
+            ).use { logger ->
+                logger.redactor.registerSecret(rawSecret)
+                logger.info("Auth", "Loaded secret=$rawHex and b64=$rawB64 pin=482910")
+                logger.error(
+                    "Crash",
+                    "Handshake failed",
+                    IllegalStateException("pairing_secret=superSecretToken leaked $rawHex")
+                )
+
+                for (entry in logger.snapshot()) {
+                    val line = entry.formatLine()
+                    assertFalse(line.contains(rawHex))
+                    assertFalse(line.contains(rawB64))
+                    assertFalse(line.contains("482910"))
+                    assertFalse(line.contains("superSecretToken"))
+                    assertTrue(line.contains("<redacted>"))
+                }
+            }
+
+            val stderrText = capturedErr.toString(Charsets.UTF_8.name())
+            val diskText = String(Files.readAllBytes(logPath), Charsets.UTF_8)
+            for (output in listOf(stderrText, diskText)) {
+                assertFalse(output.contains(rawHex))
+                assertFalse(output.contains(rawB64))
+                assertFalse(output.contains("482910"))
+                assertFalse(output.contains("superSecretToken"))
+                assertTrue(output.contains("<redacted>"))
+            }
+        } finally {
+            tempDir.toFile().deleteRecursively()
+        }
+    }
 }

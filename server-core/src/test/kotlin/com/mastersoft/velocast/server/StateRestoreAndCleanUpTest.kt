@@ -1,5 +1,6 @@
 package com.mastersoft.velocast.server
 
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.server.platform.SavedDeviceState
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -28,7 +29,7 @@ class StateRestoreAndCleanUpTest {
         val session = ServerSession(
             id = 1L,
             peerSocket = socket,
-            authenticator = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            authenticator = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             environment = env,
             clock = clock,
             logger = logger,

@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -55,6 +56,10 @@ class HostMainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
         setContentView(R.layout.activity_host_main)
         applyEdgeToEdgeInsets()
 
@@ -137,7 +142,7 @@ class HostMainActivity : AppCompatActivity() {
                             IllegalStateException("Root required for Magisk boot script")
                         )
                     } else {
-                        DaemonController.setAutoStartEnabled(checked, port)
+                        DaemonController.setAutoStartEnabled(this@HostMainActivity, checked, port)
                     }
                 }
                 res.onSuccess {

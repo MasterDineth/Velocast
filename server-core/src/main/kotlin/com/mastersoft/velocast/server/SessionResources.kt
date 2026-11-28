@@ -3,6 +3,7 @@ package com.mastersoft.velocast.server
 import android.os.Build
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.DisplayGeometry
+import com.mastersoft.velocast.protocol.Features
 import com.mastersoft.velocast.protocol.LaunchMode
 import com.mastersoft.velocast.protocol.ProtocolV2
 import com.mastersoft.velocast.server.platform.AndroidDeviceStateController
@@ -80,7 +81,7 @@ class AndroidSessionEnvironment(
 
     override val capabilities: Int
         get() {
-            var mask = ServerCapabilities.FEATURE_ROTATION_EVENTS
+            var mask = ServerCapabilities.FEATURE_ROTATION_EVENTS or Features.SECURE_CHANNEL
             if (stateController.displayPowerSupported) {
                 mask = mask or ServerCapabilities.FEATURE_DISPLAY_POWER
             }

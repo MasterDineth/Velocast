@@ -23,6 +23,17 @@ class FrameReader(
     /** Starts in [Phase.HANDSHAKE]; switch to [Phase.SESSION] once authentication succeeded. */
     var phase: Phase = Phase.HANDSHAKE
 
+    /** Optional AEAD cipher enabled upon entering [Phase.SESSION] (`Features.SECURE_CHANNEL`). */
+    var cipher: SessionCipher? = null
+        set(value) {
+            field = value
+            aeadReader = value?.let {
+                AeadRecordReader(input, it, ProtocolV2.FRAME_HEADER_SIZE + maxPayload)
+            }
+        }
+
+    private var aeadReader: AeadRecordReader? = null
+    private var decryptedPayloadReady = false
     private val headerBytes = ByteArray(ProtocolV2.FRAME_HEADER_SIZE)
     private val buffer = GrowingBuffer()
 
@@ -35,6 +46,11 @@ class FrameReader(
 
     /** Reads and validates the next header into [h]. Returns false on a clean end of stream. */
     fun readHeader(h: FrameHeader): Boolean {
+        val recordReader = aeadReader
+        if (recordReader != null && phase == Phase.SESSION) {
+            return readEncryptedFrame(recordReader, h)
+        }
+        decryptedPayloadReady = false
         val got = StreamIo.readFully(
             input,
             headerBytes,
@@ -49,13 +65,51 @@ class FrameReader(
     /** Reads the payload described by [h] into [dest] at [destOffset] without allocating. */
     fun readPayload(h: FrameHeader, dest: ByteArray, destOffset: Int) {
         require(destOffset >= 0 && dest.size - destOffset >= h.length) { "destination too small" }
-        StreamIo.readFully(input, dest, destOffset, h.length, atBoundary = false)
+        val recordReader = aeadReader
+        if (decryptedPayloadReady && recordReader != null) {
+            decryptedPayloadReady = false
+            recordReader.plaintext.copyInto(
+                destination = dest,
+                destinationOffset = destOffset,
+                startIndex = ProtocolV2.FRAME_HEADER_SIZE,
+                endIndex = ProtocolV2.FRAME_HEADER_SIZE + h.length
+            )
+        } else {
+            StreamIo.readFully(input, dest, destOffset, h.length, atBoundary = false)
+        }
     }
 
     /** Reads the payload described by [h] into [payload] and returns its length. */
     fun readPayload(h: FrameHeader): Int {
-        buffer.fill(input, h.length)
+        val recordReader = aeadReader
+        if (decryptedPayloadReady && recordReader != null) {
+            decryptedPayloadReady = false
+            buffer.copyFrom(recordReader.plaintext, ProtocolV2.FRAME_HEADER_SIZE, h.length)
+        } else {
+            buffer.fill(input, h.length)
+        }
         return h.length
+    }
+
+    private fun readEncryptedFrame(recordReader: AeadRecordReader, h: FrameHeader): Boolean {
+        val recordLen = recordReader.readDataRecord()
+        if (recordLen < 0) {
+            decryptedPayloadReady = false
+            return false
+        }
+        if (recordLen < ProtocolV2.FRAME_HEADER_SIZE) {
+            fail(ErrorCode.MALFORMED_MESSAGE, "Encrypted S2C record shorter than frame header")
+        }
+        recordReader.plaintext.copyInto(headerBytes, 0, 0, ProtocolV2.FRAME_HEADER_SIZE)
+        decode(h)
+        if (ProtocolV2.FRAME_HEADER_SIZE + h.length != recordLen) {
+            fail(
+                ErrorCode.MALFORMED_MESSAGE,
+                "Encrypted S2C record length $recordLen != header + ${h.length}"
+            )
+        }
+        decryptedPayloadReady = true
+        return true
     }
 
     private fun decode(h: FrameHeader) {
@@ -85,9 +139,17 @@ class FrameWriter(
     /** Starts in [Phase.HANDSHAKE]; only handshake messages, ERROR and BYE can be written. */
     var phase: Phase = Phase.HANDSHAKE
 
+    /** Optional AEAD cipher enabled upon entering [Phase.SESSION] (`Features.SECURE_CHANNEL`). */
+    var cipher: SessionCipher? = null
+        set(value) {
+            field = value
+            aeadWriter = value?.let { AeadRecordWriter(out, it) }
+        }
+
     /** Sequence number [writeMessage] puts into the next frame. */
     var nextSeq: Int = 0
 
+    private var aeadWriter: AeadRecordWriter? = null
     private val scratch = ByteArray(SCRATCH_SIZE)
     private val header = FrameHeader()
 
@@ -103,7 +165,16 @@ class FrameWriter(
         h.length = length
         check(h)
         encodeHeader(h, scratch)
-        if (length <= scratch.size - ProtocolV2.FRAME_HEADER_SIZE) {
+        val recordWriter = aeadWriter
+        if (recordWriter != null && phase == Phase.SESSION) {
+            recordWriter.writeSplitData(
+                prefix = scratch,
+                prefixLength = ProtocolV2.FRAME_HEADER_SIZE,
+                body = payload,
+                bodyOffset = offset,
+                bodyLength = length
+            )
+        } else if (length <= scratch.size - ProtocolV2.FRAME_HEADER_SIZE) {
             payload.copyInto(scratch, ProtocolV2.FRAME_HEADER_SIZE, offset, offset + length)
             out.write(scratch, 0, ProtocolV2.FRAME_HEADER_SIZE + length)
         } else {
@@ -124,7 +195,13 @@ class FrameWriter(
         h.length = payloadLength
         check(h)
         encodeHeader(h, frame)
-        out.write(frame, 0, ProtocolV2.FRAME_HEADER_SIZE + payloadLength)
+        val total = ProtocolV2.FRAME_HEADER_SIZE + payloadLength
+        val recordWriter = aeadWriter
+        if (recordWriter != null && phase == Phase.SESSION) {
+            recordWriter.writeData(frame, 0, total)
+        } else {
+            out.write(frame, 0, total)
+        }
     }
 
     /** Encodes [msg] and writes it with the next sequence number. */

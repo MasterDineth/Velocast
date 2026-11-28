@@ -159,6 +159,7 @@ data class SessionConfig(
             Features.CLIPBOARD or
                 Features.TEXT_INPUT or
                 Features.DISPLAY_POWER or
-                Features.ROTATION_EVENTS
+                Features.ROTATION_EVENTS or
+                Features.SECURE_CHANNEL
     }
 }

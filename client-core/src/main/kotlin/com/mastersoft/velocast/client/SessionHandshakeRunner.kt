@@ -64,6 +64,16 @@ internal object SessionHandshakeRunner {
             throw ProtocolException(ErrorCode.UNEXPECTED_MESSAGE, "Handshake not established")
         }
 
+        val sessionKeys = handshake.deriveSessionKeys()
+        if (sessionKeys != null) {
+            try {
+                val inboundCipher = sessionKeys.newClientInboundCipher()
+                val outboundCipher = sessionKeys.newClientOutboundCipher()
+                transport.installSessionCiphers(inboundCipher, outboundCipher)
+            } finally {
+                sessionKeys.close()
+            }
+        }
         transport.setPhase(Phase.SESSION)
         config.initialStreamConfig?.let { stream ->
             transport.writeControl(
