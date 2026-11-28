@@ -18,6 +18,13 @@ object ProtocolV2 {
 
     const val NONCE_SIZE = 16
     const val PROOF_SIZE = 32
+    const val SECRET_SIZE = 32
+    const val TRANSCRIPT_HASH_SIZE = 32
+    const val TRANSCRIPT_LABEL_SIZE = 17
+    const val AEAD_HEADER_SIZE = 16
+    const val AEAD_NONCE_SIZE = 12
+    const val AEAD_TAG_SIZE = 16
+    const val AEAD_DIRECTION_PREFIX_SIZE = 4
 
     /** Server to client frame header size. */
     const val FRAME_HEADER_SIZE = 24

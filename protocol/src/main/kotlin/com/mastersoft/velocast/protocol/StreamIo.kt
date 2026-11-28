@@ -61,4 +61,17 @@ internal class GrowingBuffer {
             filled += chunk
         }
     }
+
+    fun copyFrom(source: ByteArray, offset: Int, length: Int) {
+        if (array.size < length) {
+            array = ByteArray(length)
+        }
+        source.copyInto(
+            array,
+            destinationOffset = 0,
+            startIndex = offset,
+            endIndex =
+                offset + length
+        )
+    }
 }
