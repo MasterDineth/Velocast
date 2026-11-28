@@ -63,7 +63,7 @@ abstract class VerifyModuleDependenciesTask : DefaultTask() {
             ":protocol" to emptySet(),
             ":server-core" to setOf(":protocol"),
             ":client-core" to setOf(":protocol"),
-            ":launcher-adb" to setOf(":protocol"),
+            ":launcher-adb" to setOf(":protocol", ":client-core"),
             ":launcher-shizuku" to setOf(":protocol"),
             ":launcher-root" to setOf(":protocol"),
             ":designsystem" to emptySet(),
