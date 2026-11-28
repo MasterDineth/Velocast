@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S07A — ADB library decision, wireless pairing (code & QR), mDNS discovery, TLS connect, and `FUN-13` permission gate (complete on `step/S07a-adb-pair`, closing `FUN-13` and advancing `SEC-04`).
+S07B — `AdbLauncher`, ADB tunnel data channel, `PrepareRunner`, and encrypted `DeviceStore` (complete on `step/S07b-adb-launch`, advancing `SEC-04`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -58,14 +58,20 @@ S07A — ADB library decision, wireless pairing (code & QR), mDNS discovery, TLS
   - Implemented `AdbMdnsDiscovery` and `AndroidNsdBackend` (`NsdManager` for `_adb-tls-pairing._tcp` and `_adb-tls-connect._tcp`) with timeouts, manual `host:port` fallback, and automatic port refresh when Wireless Debugging is toggled off/on.
   - Implemented `AdbErrorMapper` (`DebuggingOff`, `DifferentNetwork`, `AuthExpired`, `NotPaired`, `WrongPairingCode`) with `SecretRedactor` scrubbing, and closed `FUN-13` via `LocalNetworkPermissionGate` (removing premature pre-API-37 `ACCESS_LOCAL_NETWORK` requests from `:app-viewer`).
   - Added unit tests (`AdbQrPayloadAndPermissionTest`, `AdbErrorMappingTest`, `AdbDiscoveryStateMachineTest`, `AdbKeyStoreAndSpake2Test`, `AdbClientIntegrationTest`) and manual real-device test plan (`docs/adb-pairing-test-plan.md`).
+- S07B — `AdbLauncher`, ADB tunnel data channel, `PrepareRunner`, and encrypted `DeviceStore` (complete on `step/S07b-adb-launch`):
+  - Added `DataChannelMode` (`DIRECT_TCP`, `ADB_TUNNEL`), `ServerEndpoint.dataChannelMode`/`dataChannelReason`/`tunnelConnector`, `ServerLauncher.fallbackAfterDirectConnectFailure`, `SessionLifecycleHooks.onDataChannelSelected`, `MirrorClient` tunnel connector routing, and `SessionMetrics` / `DiagnosticsRingBuffer` `DATA_CHANNEL` reporting in `:client-core`.
+  - Added `Device`, `LaunchMethod`, `DeviceStore`, `EncryptedFileDeviceStore` (AEAD-sealed `devices.vcd` in `noBackupFilesDir`, Keystore-only secret storage via `KeyStore`), `InMemoryDeviceStore`, and binary schema migrations (`V1ToV2Migration`, `V2ToV3Migration`) in `:client-core`.
+  - Added `AdbByteStream.setReadTimeout`, `ServerJarSource` (`FileServerJarSource`, `AssetServerJarSource`, `Sha256`), `AdbTunnelSocketConnector` (`tcp:<port>` stream), `AdbLauncher : ServerLauncher` (SHA-256 check/push/verify, `--secret-from-stdin` pipe without argv exposure, `READY` parser + timeout cleanup, persistent shell lifetime guard, automatic USB tunnel & Wi-Fi fallback), and `PrepareRunner` (5 ordered idempotent shell steps with check/apply/verify and `Done`/`AlreadyDone`/`NeedsUser`/`Failed`) in `:launcher-adb`.
+  - Added unit tests (`AdbLauncherTest`, `PrepareRunnerTest`, `DeviceStoreTest`, `DataChannelTransportTest`) and manual real-device verification plan (`docs/adb-launch-test-plan.md`).
 
 ## Next
-- Proceed to S07B — `AdbLauncher`, `PrepareRunner`, tunnel data channel, and encrypted `DeviceStore` (`step/S07b-adb-launch`).
+- Proceed to S07C — USB OTG transport using Android USB Host API (`step/S07c-usb-otg`).
 
 ## Open questions
 - None.
 
 ## Owner checks pending (needs a real phone)
+- Confirm on device (`S07B`): execute `docs/adb-launch-test-plan.md` (`M-S07B-01` through `M-S07B-04`) against a real unrooted Android 11+ / Android 16 phone to confirm end-to-end launch/streaming, Wi-Fi tunnel fallback, all 5 `PrepareRunner` commands across target OEMs, and `EncryptedFileDeviceStore` persistence across restarts.
 - Confirm on device (`S07A`): execute `docs/adb-pairing-test-plan.md` (`M-S07A-01` through `M-S07A-06`) against an unrooted Android 11+ / Android 16 phone to verify QR pairing, 6-digit code pairing, Wireless Debugging toggle port re-discovery, `STLS` connect + `shell`/`push`, Keystore persistence across app restarts, and typed errors.
 - Confirm on device (`S05`): run `tools/spike/run-shell-server.sh` (or `.ps1`) on physical Android 11 (API 30), Android 13 (API 33), and Android 14 (API 34, e.g. Samsung One UI) phones, plus on Xiaomi HyperOS with **USB debugging (Security settings)** toggled off to observe `Denied` / `INJECTION_DENIED`, and commit the resulting JSON files under `tools/spike/results/`.
 - On the rooted old phone, start the server through `:app-host` (`DaemonController` -> `com.mastersoft.velocast.server.Main` with `/data/adb/velocast`), connect, rotate three times, `kill -9` the server, and confirm rotation lock and display state are restored.
