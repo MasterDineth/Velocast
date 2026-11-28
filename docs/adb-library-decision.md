@@ -1,6 +1,6 @@
 # ADB Client Library Decision (`S07A`)
 
-Status: Accepted (`S07A`, branch `step/S07a-adb-pair`).
+Status: Accepted (`S07A`, branch `step/S07a-adb-pair`; USB OTG completed in `S07C`, branch `step/S07c-usb`).
 Module: `:launcher-adb` (`com.mastersoft.velocast.launcher.adb`).
 
 ## 1. Context and Requirements
@@ -74,5 +74,5 @@ Why Option 3 wins decisively over `libadb-android` and `dadb` (+ fork):
    - **Edwards25519 group & scalar math for SPAKE2**: `io.github.andreypfau:curve25519-kotlin:0.0.8` (`curve25519-dalek` port) for constant-time point decompression, cofactor clearing, scalar multiplication, and point addition/subtraction, paired with JCA `SHA-512`, `:protocol`'s RFC 5869 `HkdfSha256`, and JCA `AES/GCM/NoPadding`.
 3. **Clean `S07A` -> `S07B` -> `S07C` architecture**:
    - All callers in `:launcher-adb` (`S07B` `AdbLauncher`, `PrepareRunner`) and `:app-viewer` (`S13`) depend strictly on the `AdbClient` and `AdbDiscovery` interfaces (`AdbClientFactory`).
-   - Internally, `InHouseAdbClient` layers `AdbConnection` multiplexing over a packet-preserving `AdbPacketTransport` interface, so `S07A` uses TCP + in-place `A_STLS` TLS 1.3 upgrade while `S07C` plugs in `UsbDeviceConnection` bulk packet transfers without touching stream multiplexing, `shell`, `push`, or `openStream`.
+   - Internally, `InHouseAdbClient` layers `AdbConnection` multiplexing over a packet-preserving `AdbPacketTransport` interface, so `S07A` uses TCP + in-place `A_STLS` TLS 1.3 upgrade while `S07C` plugs in `AdbUsbTransport` (`AndroidUsbHostBackend` / `UsbDeviceConnection` bulk IN/OUT transfers with 16 KB chunking and ZLP termination) without touching stream multiplexing, `shell`, `push`, or `openStream`.
    - Avoids forking `dadb` (whose `AdbConnection` lacks `A_STLS`, wireless pairing, and packet-boundary USB framing) and avoids `Kadb`'s `compileSdk 37` and viewer-side `hiddenapibypass` dependencies.

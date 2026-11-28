@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S07B — `AdbLauncher`, ADB tunnel data channel, `PrepareRunner`, and encrypted `DeviceStore` (complete on `step/S07b-adb-launch`, advancing `SEC-04`).
+S07C — USB OTG transport, permission/attach/detach handling, authorisation dialog (`AUTH_EXPIRED`), automatic Wi-Fi-to-USB fallback, and reboot recovery (complete on `step/S07c-usb`, completing `S07` and closing `SEC-04` for ADB Wi-Fi + USB OTG).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -63,14 +63,20 @@ S07B — `AdbLauncher`, ADB tunnel data channel, `PrepareRunner`, and encrypted 
   - Added `Device`, `LaunchMethod`, `DeviceStore`, `EncryptedFileDeviceStore` (AEAD-sealed `devices.vcd` in `noBackupFilesDir`, Keystore-only secret storage via `KeyStore`), `InMemoryDeviceStore`, and binary schema migrations (`V1ToV2Migration`, `V2ToV3Migration`) in `:client-core`.
   - Added `AdbByteStream.setReadTimeout`, `ServerJarSource` (`FileServerJarSource`, `AssetServerJarSource`, `Sha256`), `AdbTunnelSocketConnector` (`tcp:<port>` stream), `AdbLauncher : ServerLauncher` (SHA-256 check/push/verify, `--secret-from-stdin` pipe without argv exposure, `READY` parser + timeout cleanup, persistent shell lifetime guard, automatic USB tunnel & Wi-Fi fallback), and `PrepareRunner` (5 ordered idempotent shell steps with check/apply/verify and `Done`/`AlreadyDone`/`NeedsUser`/`Failed`) in `:launcher-adb`.
   - Added unit tests (`AdbLauncherTest`, `PrepareRunnerTest`, `DeviceStoreTest`, `DataChannelTransportTest`) and manual real-device verification plan (`docs/adb-launch-test-plan.md`).
+- S07C — USB OTG transport (`AdbUsbTransport`), permission/attach/detach lifecycle, authorisation dialog, automatic Wi-Fi-to-USB fallback, and reboot recovery (complete on `step/S07c-usb`):
+  - Implemented `AdbUsbTransport` (`AdbUsbTransport.kt`) and `AndroidUsbHostBackend` (`AndroidUsbHostBackend.kt`) using `android.hardware.usb` (`UsbManager`, `UsbDeviceConnection`, bulk IN/OUT endpoints of ADB interface `0xFF / 0x42 / 0x01`) with distinct 24-byte header and 16 KB chunked payload bulk transfers, Zero-Length Packet (ZLP) termination on `outMaxPacketSize` multiples, inbound ZLP skipping, checksum verification, and bounded multiplexing poll slices.
+  - Added `AdbUsbController` and UI-facing `AdbUsbState` (`Disconnected`, `CableDetected`, `Authorising` with `VIEWER_USB_PERMISSION` and `DEVICE_ADB_APPROVAL`, `Ready`) (`AdbUsbState.kt`, `AdbUsbController.kt`), package-explicit `PendingIntent` + `RECEIVER_NOT_EXPORTED` hotplug/permission broadcasts, `AdbAuthorizationRequiredException` + `AdbOperationStage.USB_CONNECT` mapping unapproved/expired target prompts to `AUTH_EXPIRED`, and reboot detach/re-enumeration correlation across new USB bus addresses.
+  - Wired `AdbClient.usb` (`InHouseAdbClient`, `AdbClientFactory`) and `AdbLauncher` (`bindUsbReconnectTrigger`, automatic USB OTG selection when Wi-Fi debugging is unavailable and an ADB cable is attached, loopback `ADB_TUNNEL` data channel, and retryable `LINK_LOST` mapping across reboot boot-up gaps).
+  - Added unit & integration tests (`AdbUsbTransportFramingTest`, `AdbUsbLifecycleAndLauncherTest`) and manual two-phone verification plan (`docs/adb-usb-test-plan.md`).
 
 ## Next
-- Proceed to S07C — USB OTG transport using Android USB Host API (`step/S07c-usb-otg`).
+- Proceed to S08 — Host app: Prepare and keep-alive (`step/S08-host-prepare`).
 
 ## Open questions
 - None.
 
 ## Owner checks pending (needs a real phone)
+- Confirm on device (`S07C`): execute `docs/adb-usb-test-plan.md` (`M-S07C-01` through `M-S07C-04`) across two physical Android phones with a USB OTG cable to confirm `CableDetected` -> `Authorising` -> `Ready`, `AUTH_EXPIRED` timeout & OTG-mouse retry, automatic Wi-Fi-to-USB `ADB_TUNNEL` session, and seamless reconnection when the old phone reboots while connected (both unlocked and with a secure PIN lock `L10`).
 - Confirm on device (`S07B`): execute `docs/adb-launch-test-plan.md` (`M-S07B-01` through `M-S07B-04`) against a real unrooted Android 11+ / Android 16 phone to confirm end-to-end launch/streaming, Wi-Fi tunnel fallback, all 5 `PrepareRunner` commands across target OEMs, and `EncryptedFileDeviceStore` persistence across restarts.
 - Confirm on device (`S07A`): execute `docs/adb-pairing-test-plan.md` (`M-S07A-01` through `M-S07A-06`) against an unrooted Android 11+ / Android 16 phone to verify QR pairing, 6-digit code pairing, Wireless Debugging toggle port re-discovery, `STLS` connect + `shell`/`push`, Keystore persistence across app restarts, and typed errors.
 - Confirm on device (`S05`): run `tools/spike/run-shell-server.sh` (or `.ps1`) on physical Android 11 (API 30), Android 13 (API 33), and Android 14 (API 34, e.g. Samsung One UI) phones, plus on Xiaomi HyperOS with **USB debugging (Security settings)** toggled off to observe `Denied` / `INJECTION_DENIED`, and commit the resulting JSON files under `tools/spike/results/`.

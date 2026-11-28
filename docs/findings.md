@@ -361,14 +361,14 @@ Recommendation: Add LICENSE (needed before sharing), docs/protocol.md, docs/trou
 
 ---
 
-## Findings traceability (`S00`–`S07A`)
+## Findings traceability (`S00`–`S07C`)
 
 | Finding | Status | Evidence / Where closed |
 | --- | --- | --- |
 | `SEC-01` | Closed (`S02`, `S03A`, `S06`) | Mandatory `HELLO`/`SERVER_HELLO`/`AUTH_PROOF` handshake (`HMAC-SHA256` with `HKDF-SHA256` derived key over `SHA-256(transcript)`), constant-time comparison, mandatory `SECURE_CHANNEL`, and per-IP back-off before any session frame or input (`HkdfAuthenticator`, `SessionGuard`, `SecurityCryptoTest`, `SessionGuardTest`, `ServerSessionSecurityTest`). |
 | `SEC-02` | Closed (`S06`) | All post-handshake `Phase.SESSION` traffic wrapped in `AES-256-GCM` records with 96-bit directional counter nonces, 16-byte AAD headers, strict counter monotonicity, automatic HKDF rekeying before `2^32` frames, `AndroidKeyStore`-encrypted secret files, and `SecretRedactor` log scrubbing (`AesGcmSessionCipher`, `EncryptedFileKeyStore`, `AeadFramingAndKeyStoreTest`, `ServerSessionSecurityTest`, `ClientSecurityWiringTest`, [security.md](security.md)). |
 | `SEC-03` | Closed (`S03A`) | `SessionGuard` authenticates new peers before pre-empting an active session and applies per-IP exponential back-off (`SessionGuardTest`). |
-| `SEC-04` | Evidence proven (`S05A`, `S05B`); ADB client/launcher/prepare in `S07A`/`S07B`; Shizuku in `S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities ([spike-shell-user.md](spike-shell-user.md)); `AdbClient` wireless pairing, `STLS` TLS 1.3 connect, `shell`, `push`, and `openStream` added in `:launcher-adb` (`AdbClientIntegrationTest`); `AdbLauncher`, ADB `tcp:<port>` tunnel fallback, `PrepareRunner`, and Keystore-backed `DeviceStore` implemented in `S07B` (`AdbLauncherTest`, `PrepareRunnerTest`, `DeviceStoreTest`). |
+| `SEC-04` | Closed for primary ADB launchers (`S05`, `S07A`–`S07C`); optional Shizuku launcher in `S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities ([spike-shell-user.md](spike-shell-user.md)); `AdbClient` wireless pairing, `STLS` TLS 1.3 connect, `shell`, `push`, and `openStream` added in `:launcher-adb` (`AdbClientIntegrationTest`); `AdbLauncher`, ADB `tcp:<port>` tunnel fallback, `PrepareRunner`, and Keystore-backed `DeviceStore` added in `S07B` (`AdbLauncherTest`, `PrepareRunnerTest`, `DeviceStoreTest`); USB OTG transport (`AdbUsbTransport`, `AndroidUsbHostBackend`, `AdbUsbController`, `AdbUsbState`, auto Wi-Fi-to-USB fallback, and reboot reconnection) completed in `S07C` (`AdbUsbTransportFramingTest`, `AdbUsbLifecycleAndLauncherTest`, [adb-usb-test-plan.md](adb-usb-test-plan.md)). |
 | `SEC-05` | Closed (`S02`, `S03A`) | Strict `KeyCodes` allow-list, pointer ID `0..31`, finite `[0, 1]` coordinates, and `PointerStateTracker` enforced in `:protocol` and `InputInjector` (`ValidatorsTest`, `ServerSessionValidationTest`). |
 | `SEC-06` | Partial (`S03A`; root launcher in `S10`) | Removed hardcoded `/data/local/tmp` state/log paths from `:server-core`; `--state-dir` is explicit (`ServerArgsAndMainTest`). |
 | `SEC-09` | Closed (`S00`) | `.gitignore` added, tracked IDE/build state removed, default LAN IP removed. |
