@@ -19,9 +19,11 @@ PERF-08 (`captureUs`, `PONG.serverUs`).
 - The connection is one TCP byte stream per direction. There are two framings:
   server to client (S to C) uses a 24-byte frame header, client to server (C to S) uses a 16-byte
   control packet. Both are described below.
-- The protocol is an ordinary byte stream protocol. Encryption (an AEAD record layer around these
-  bytes after the handshake, feature bit `SECURE_CHANNEL`) is added in step S06 and is not part of
-  this document yet.
+- The protocol is an ordinary byte stream protocol. When `Features.SECURE_CHANNEL` (`0x20`) is
+  negotiated (mandatory for production sessions in step `S06`), every post-handshake `Phase.SESSION`
+  frame or control packet is wrapped in an `AES-256-GCM` record with a 16-byte authenticated header
+  and 96-bit directional counter nonce; see [security.md](security.md) for the full AEAD record
+  layout and HKDF-SHA256 key schedule.
 - After any protocol violation the receiver closes the connection. It must not try to resynchronise.
 
 ### 1.1 Limits
@@ -510,8 +512,9 @@ stateDiagram-v2
 
 ### 6.2 Transcript and proofs
 
-A proof is `HMAC-SHA256(key, transcript)`; the key is derived from the session or pairing secret
-(step S06). The library only defines the interface:
+A proof is `HMAC-SHA256(authKey, SHA-256(transcript))` in production (`HkdfAuthenticator`, step
+`S06`), where `authKey` is derived via `HKDF-SHA256` from the shared secret and both nonces; see
+[security.md](security.md). The protocol state machine interacts with proofs through the interface:
 
 ```kotlin
 interface Authenticator {
