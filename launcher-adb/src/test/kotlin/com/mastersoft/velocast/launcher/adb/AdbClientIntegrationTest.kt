@@ -13,7 +13,9 @@ import java.nio.ByteOrder
 import java.security.PublicKey
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLServerSocket
 import javax.net.ssl.SSLSocket
 import kotlinx.coroutines.async
@@ -96,6 +98,7 @@ class AdbClientIntegrationTest {
             }
 
             val pairResult = env.client.pair("127.0.0.1", pairingServer.port, "482915")
+            assertTrue(pairingServer.awaitAuthorized())
             assertEquals("adb-velocast-test-guid", pairResult.peerGuid)
             assertEquals(1, authorizedKeys.size)
 
@@ -181,6 +184,7 @@ class AdbClientIntegrationTest {
             closeables += it
         }
         var qrServerPort = -1
+        var qrPairingServer: FakeAdbPairingServer? = null
         val qrResult = env.client.pairWithQr(timeoutMs = 5_000L) { qrPayload ->
             val server = FakeAdbPairingServer(qrPayload.password) {
                 authorizedKeys.add(it)
@@ -188,6 +192,7 @@ class AdbClientIntegrationTest {
                 it.start()
                 closeables += it
             }
+            qrPairingServer = server
             qrServerPort = server.port
             env.nsdBackend.emitResolved(
                 DiscoveredAdbService(
@@ -198,6 +203,7 @@ class AdbClientIntegrationTest {
                 )
             )
         }
+        assertTrue(qrPairingServer!!.awaitAuthorized())
         assertEquals(qrServerPort, qrResult.port)
         assertTrue(env.client.connect("127.0.0.1", connectServer.port).isTls)
     }
@@ -240,8 +246,12 @@ private class FakeAdbPairingServer(
         wantClientAuth = true
     }
     private val executor = Executors.newSingleThreadExecutor()
+    private val authorizedLatch = CountDownLatch(1)
 
     val port: Int get() = serverSocket.localPort
+
+    fun awaitAuthorized(timeoutMs: Long = 3_000L): Boolean =
+        authorizedLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
 
     fun start() {
         executor.execute {
@@ -253,6 +263,7 @@ private class FakeAdbPairingServer(
                 val peerData = AdbPairingProtocol.acceptAsServer(clientSocket, expectedCode)
                 if (peerData.isNotEmpty() && peerCerts.isNotEmpty()) {
                     onAuthorized(peerCerts[0].publicKey)
+                    authorizedLatch.countDown()
                 }
             } catch (_: Exception) {
                 // Expected on wrong code or teardown.

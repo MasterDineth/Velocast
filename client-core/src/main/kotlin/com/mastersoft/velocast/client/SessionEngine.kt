@@ -306,6 +306,8 @@ private class SessionRunner(
     private val nonceGenerator: () -> ByteArray,
     private val lifecycleHooks: SessionLifecycleHooks
 ) {
+    private val directFallbackHelper = DirectFallbackHelper(serverLauncher, lifecycleHooks)
+
     suspend fun run() {
         var activeSetup = establishInitialSession()
         while (activeSetup != null) {
@@ -332,6 +334,7 @@ private class SessionRunner(
 
     private suspend fun establishInitialSession(): ActiveSessionSetup? {
         val endpoint = launchServer() ?: return null
+        lifecycleHooks.onDataChannelSelected(endpoint.dataChannelMode, endpoint.dataChannelReason)
         stateHolder.set(SessionState.Handshaking(endpoint, attempt = 1))
         return when (val outcome = connectAndHandshake(endpoint)) {
             is HandshakeOutcome.Success -> outcome.setup
@@ -341,7 +344,26 @@ private class SessionRunner(
                 null
             }
 
-            is HandshakeOutcome.Transient -> reconnect(endpoint, outcome.error)
+            is HandshakeOutcome.Transient -> {
+                val fallback = directFallbackHelper.tryConnectFallback(
+                    failedEndpoint = endpoint,
+                    cause = outcome.error,
+                    attempt = 1,
+                    stateHolder = stateHolder,
+                    connectFn = ::connectAndHandshake
+                )
+                when (fallback) {
+                    is FallbackConnectOutcome.Connected -> fallback.setup
+
+                    is FallbackConnectOutcome.Fatal -> {
+                        stateHolder.set(SessionState.Failed(fallback.error))
+                        null
+                    }
+
+                    is FallbackConnectOutcome.Retry ->
+                        reconnect(fallback.endpoint, fallback.error)
+                }
+            }
         }
     }
 
@@ -448,14 +470,35 @@ private class SessionRunner(
         attempt: Int
     ): ReconnectOutcome = try {
         val newEndpoint = launchServerOrThrow()
+        lifecycleHooks.onDataChannelSelected(
+            newEndpoint.dataChannelMode,
+            newEndpoint.dataChannelReason
+        )
         stateHolder.set(SessionState.Handshaking(newEndpoint, attempt))
         when (val secondTry = connectAndHandshake(newEndpoint)) {
             is HandshakeOutcome.Success -> ReconnectOutcome.Connected(secondTry.setup)
 
             is HandshakeOutcome.Fatal -> ReconnectOutcome.Fatal(secondTry.error)
 
-            is HandshakeOutcome.Transient ->
-                ReconnectOutcome.Retry(newEndpoint, secondTry.error)
+            is HandshakeOutcome.Transient -> {
+                val fallback = directFallbackHelper.tryConnectFallback(
+                    failedEndpoint = newEndpoint,
+                    cause = secondTry.error,
+                    attempt = attempt,
+                    stateHolder = stateHolder,
+                    connectFn = ::connectAndHandshake
+                )
+                when (fallback) {
+                    is FallbackConnectOutcome.Connected -> ReconnectOutcome.Connected(
+                        fallback.setup
+                    )
+
+                    is FallbackConnectOutcome.Fatal -> ReconnectOutcome.Fatal(fallback.error)
+
+                    is FallbackConnectOutcome.Retry ->
+                        ReconnectOutcome.Retry(fallback.endpoint, fallback.error)
+                }
+            }
         }
     } catch (e: SessionErrorException) {
         if (e.error.isRetryable) {
@@ -531,15 +574,85 @@ private class SessionRunner(
         }
     }
 
-    private sealed interface HandshakeOutcome {
-        data class Success(val setup: ActiveSessionSetup) : HandshakeOutcome
-        data class Fatal(val error: SessionError) : HandshakeOutcome
-        data class Transient(val error: SessionError) : HandshakeOutcome
-    }
-
     private sealed interface ReconnectOutcome {
         data class Connected(val setup: ActiveSessionSetup) : ReconnectOutcome
         data class Fatal(val error: SessionError) : ReconnectOutcome
         data class Retry(val endpoint: ServerEndpoint, val error: SessionError) : ReconnectOutcome
+    }
+}
+
+private sealed interface HandshakeOutcome {
+    data class Success(val setup: ActiveSessionSetup) : HandshakeOutcome
+    data class Fatal(val error: SessionError) : HandshakeOutcome
+    data class Transient(val error: SessionError) : HandshakeOutcome
+}
+
+private sealed interface FallbackConnectOutcome {
+    data class Connected(val setup: ActiveSessionSetup) : FallbackConnectOutcome
+    data class Fatal(val error: SessionError) : FallbackConnectOutcome
+    data class Retry(val endpoint: ServerEndpoint, val error: SessionError) : FallbackConnectOutcome
+}
+
+private sealed interface FallbackResult {
+    data class Endpoint(val endpoint: ServerEndpoint) : FallbackResult
+    data class Retry(val error: SessionError) : FallbackResult
+    data class Fatal(val error: SessionError) : FallbackResult
+    data object None : FallbackResult
+}
+
+private class DirectFallbackHelper(
+    private val serverLauncher: ServerLauncher,
+    private val lifecycleHooks: SessionLifecycleHooks
+) {
+    suspend fun tryConnectFallback(
+        failedEndpoint: ServerEndpoint,
+        cause: SessionError,
+        attempt: Int,
+        stateHolder: SessionStateHolder,
+        connectFn: suspend (ServerEndpoint) -> HandshakeOutcome
+    ): FallbackConnectOutcome = when (val fallback = tryFallback(failedEndpoint, cause)) {
+        is FallbackResult.Endpoint -> {
+            val tunnelEndpoint = fallback.endpoint
+            lifecycleHooks.onDataChannelSelected(
+                tunnelEndpoint.dataChannelMode,
+                tunnelEndpoint.dataChannelReason
+            )
+            stateHolder.set(SessionState.Handshaking(tunnelEndpoint, attempt))
+            when (val outcome = connectFn(tunnelEndpoint)) {
+                is HandshakeOutcome.Success -> FallbackConnectOutcome.Connected(outcome.setup)
+
+                is HandshakeOutcome.Fatal -> FallbackConnectOutcome.Fatal(outcome.error)
+
+                is HandshakeOutcome.Transient ->
+                    FallbackConnectOutcome.Retry(tunnelEndpoint, outcome.error)
+            }
+        }
+
+        is FallbackResult.Fatal -> FallbackConnectOutcome.Fatal(fallback.error)
+
+        is FallbackResult.Retry -> FallbackConnectOutcome.Retry(failedEndpoint, fallback.error)
+
+        FallbackResult.None -> FallbackConnectOutcome.Retry(failedEndpoint, cause)
+    }
+
+    private suspend fun tryFallback(
+        failedEndpoint: ServerEndpoint,
+        cause: SessionError
+    ): FallbackResult {
+        if (failedEndpoint.dataChannelMode != DataChannelMode.DIRECT_TCP) {
+            return FallbackResult.None
+        }
+        return try {
+            val next = serverLauncher.fallbackAfterDirectConnectFailure(failedEndpoint, cause)
+            if (next != null) FallbackResult.Endpoint(next) else FallbackResult.None
+        } catch (e: SessionErrorException) {
+            if (e.error.isRetryable) {
+                FallbackResult.Retry(e.error)
+            } else {
+                FallbackResult.Fatal(e.error)
+            }
+        } catch (_: IOException) {
+            FallbackResult.None
+        }
     }
 }

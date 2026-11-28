@@ -24,11 +24,13 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -94,8 +96,10 @@ class MirrorClientTest {
 
                 client.writeControl(ControlCommand.Bye(null))
             } finally {
-                client.close()
-                scope.cancel()
+                withContext(NonCancellable) {
+                    client.close()
+                    scopeJob.cancelAndJoin()
+                }
             }
 
             serverThread.join(2_000L)
@@ -117,7 +121,8 @@ class MirrorClientTest {
             }.apply { start() }
 
             val client = MirrorClient(ioDispatcher = Dispatchers.IO)
-            val scope = CoroutineScope(Dispatchers.IO + Job())
+            val scopeJob = SupervisorJob()
+            val scope = CoroutineScope(Dispatchers.IO + scopeJob)
             try {
                 val endpoint = ServerEndpoint(
                     "127.0.0.1",
@@ -136,8 +141,10 @@ class MirrorClientTest {
                 assertNotNull(caught)
             } finally {
                 releaseServer.countDown()
-                client.close()
-                scope.cancel()
+                withContext(NonCancellable) {
+                    client.close()
+                    scopeJob.cancelAndJoin()
+                }
                 serverThread.join(2_000L)
             }
         }

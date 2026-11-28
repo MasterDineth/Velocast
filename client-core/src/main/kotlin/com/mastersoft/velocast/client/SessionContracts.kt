@@ -23,6 +23,16 @@ enum class LaunchPhase {
 interface ServerLauncher {
     suspend fun start(onPhase: (LaunchPhase) -> Unit = {}): ServerEndpoint
 
+    /**
+     * Optional fallback when [failedEndpoint] used [DataChannelMode.DIRECT_TCP] and direct TCP
+     * reachability failed (e.g. AP client isolation on Wi-Fi). Launchers that support an ADB
+     * tunnel can relaunch bound to loopback and return a [DataChannelMode.ADB_TUNNEL] endpoint.
+     */
+    suspend fun fallbackAfterDirectConnectFailure(
+        failedEndpoint: ServerEndpoint,
+        cause: SessionError
+    ): ServerEndpoint? = null
+
     suspend fun stop()
 }
 
@@ -80,6 +90,8 @@ object NoOpSessionFrameConsumer : SessionFrameConsumer
 
 /** Hooks invoked by [SessionEngine] around lifecycle transitions for touch/media cleanup. */
 interface SessionLifecycleHooks {
+    fun onDataChannelSelected(mode: DataChannelMode, reason: String?) = Unit
+
     suspend fun onBeforePause() = Unit
 
     suspend fun onBeforeDisconnect() = Unit

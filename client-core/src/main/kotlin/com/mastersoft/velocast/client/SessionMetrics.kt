@@ -40,7 +40,9 @@ data class SessionMetricsSnapshot(
     val skippedNonKeyframes: Long = 0L,
     val keyframeRequestsSent: Long = 0L,
     val codecRecoveries: Long = 0L,
-    val fps: Float = 0f
+    val fps: Float = 0f,
+    val dataChannelMode: DataChannelMode? = null,
+    val dataChannelReason: String? = null
 )
 
 /** Fixed-capacity circular diagnostics log buffer safe for concurrent writers/readers. */
@@ -127,6 +129,31 @@ class SessionMetrics(
         }
     }
 
+    private class FpsWindow(private val capacity: Int, private val millisPerSec: Float) {
+        private val samples = LongArray(capacity)
+        private var head = 0
+        private var count = 0
+        var currentFps: Float = 0f
+            private set
+
+        fun record(renderedAtMs: Long) {
+            samples[head] = renderedAtMs
+            head = (head + 1) % capacity
+            if (count < capacity) count++
+            if (count >= 2) {
+                val oldestIdx = if (count < capacity) 0 else head
+                val spanMs = (renderedAtMs - samples[oldestIdx]).coerceAtLeast(1L)
+                currentFps = ((count - 1) * millisPerSec) / spanMs.toFloat()
+            }
+        }
+
+        fun clear() {
+            head = 0
+            count = 0
+            currentFps = 0f
+        }
+    }
+
     private val lock = ReentrantLock()
     private val mutableState = MutableStateFlow(SessionMetricsSnapshot())
     val state: StateFlow<SessionMetricsSnapshot> = mutableState.asStateFlow()
@@ -143,9 +170,7 @@ class SessionMetrics(
     private val decodeWindow = RollingLongWindow(STAGE_WINDOW_SIZE)
     private val renderWindow = RollingLongWindow(STAGE_WINDOW_SIZE)
     private val endToEndWindow = RollingLongWindow(STAGE_WINDOW_SIZE)
-    private val renderTimeWindowMs = LongArray(FPS_WINDOW_SIZE)
-    private var renderTimeHead = 0
-    private var renderTimeCount = 0
+    private val fpsWindow = FpsWindow(FPS_WINDOW_SIZE, MILLIS_PER_SEC_F)
 
     private var latestFrame: FrameStageTimings? = null
     private var renderedFrames = 0L
@@ -153,7 +178,8 @@ class SessionMetrics(
     private var skippedNonKeyframes = 0L
     private var keyframeRequestsSent = 0L
     private var codecRecoveries = 0L
-    private var currentFps = 0f
+    private var dataChannelMode: DataChannelMode? = null
+    private var dataChannelReason: String? = null
 
     fun recordPong(t0Us: Long, t1Us: Long, serverUs: Long) {
         val rttUs = (t1Us - t0Us).coerceAtLeast(0L)
@@ -225,7 +251,7 @@ class SessionMetrics(
             if (endToEndUs != null) {
                 endToEndWindow.add(endToEndUs)
             }
-            updateFpsLocked(renderedAtMs)
+            fpsWindow.record(renderedAtMs)
             renderedFrames++
 
             val recorded = FrameStageTimings(
@@ -298,6 +324,21 @@ class SessionMetrics(
         diagnosticsLog.append(clock.monotonicMillis(), category, message)
     }
 
+    fun recordDataChannel(mode: DataChannelMode, reason: String? = null) {
+        val nowMs = clock.monotonicMillis()
+        val normalizedReason = reason?.takeIf { it.isNotBlank() }
+        lock.withLock {
+            dataChannelMode = mode
+            dataChannelReason = normalizedReason
+            publishLocked()
+        }
+        diagnosticsLog.append(
+            nowMs,
+            CATEGORY_DATA_CHANNEL,
+            "mode=$mode reason=${normalizedReason ?: "default"}"
+        )
+    }
+
     fun resetConnectionSync() {
         lock.withLock {
             pingCursor = 0
@@ -321,29 +362,18 @@ class SessionMetrics(
             decodeWindow.clear()
             renderWindow.clear()
             endToEndWindow.clear()
-            renderTimeHead = 0
-            renderTimeCount = 0
+            fpsWindow.clear()
             latestFrame = null
             renderedFrames = 0L
             droppedFrames = 0L
             skippedNonKeyframes = 0L
             keyframeRequestsSent = 0L
             codecRecoveries = 0L
-            currentFps = 0f
+            dataChannelMode = null
+            dataChannelReason = null
             publishLocked()
         }
         diagnosticsLog.clear()
-    }
-
-    private fun updateFpsLocked(renderedAtMs: Long) {
-        renderTimeWindowMs[renderTimeHead] = renderedAtMs
-        renderTimeHead = (renderTimeHead + 1) % FPS_WINDOW_SIZE
-        if (renderTimeCount < FPS_WINDOW_SIZE) renderTimeCount++
-        if (renderTimeCount >= 2) {
-            val oldestIdx = if (renderTimeCount < FPS_WINDOW_SIZE) 0 else renderTimeHead
-            val spanMs = (renderedAtMs - renderTimeWindowMs[oldestIdx]).coerceAtLeast(1L)
-            currentFps = ((renderTimeCount - 1) * MILLIS_PER_SEC_F) / spanMs.toFloat()
-        }
     }
 
     private fun publishLocked() {
@@ -362,7 +392,9 @@ class SessionMetrics(
             skippedNonKeyframes = skippedNonKeyframes,
             keyframeRequestsSent = keyframeRequestsSent,
             codecRecoveries = codecRecoveries,
-            fps = currentFps
+            fps = fpsWindow.currentFps,
+            dataChannelMode = dataChannelMode,
+            dataChannelReason = dataChannelReason
         )
     }
 
@@ -382,5 +414,6 @@ class SessionMetrics(
         const val CATEGORY_QUEUE_DROP = "QUEUE_DROP"
         const val CATEGORY_KEYFRAME_REQ = "KEYFRAME_REQ"
         const val CATEGORY_DECODER_EVENT = "DECODER_EVENT"
+        const val CATEGORY_DATA_CHANNEL = "DATA_CHANNEL"
     }
 }
