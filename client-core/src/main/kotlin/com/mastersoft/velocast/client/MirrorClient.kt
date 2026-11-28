@@ -117,8 +117,9 @@ class MirrorClient(
         }
         previous?.shutdown()
 
+        val connector = resolveConnector(endpoint)
         val socket = withContext(ioDispatcher) {
-            socketConnector.connect(
+            connector.connect(
                 host = endpoint.host,
                 port = endpoint.port,
                 readTimeoutMs = readTimeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
@@ -188,6 +189,15 @@ class MirrorClient(
         }
         conn?.shutdown()
     }
+
+    private fun resolveConnector(endpoint: ServerEndpoint): ClientSocketConnector =
+        when (endpoint.dataChannelMode) {
+            DataChannelMode.DIRECT_TCP -> socketConnector
+
+            DataChannelMode.ADB_TUNNEL ->
+                endpoint.tunnelConnector
+                    ?: throw IOException("ADB tunnel mode requires a tunnelConnector")
+        }
 
     companion object {
         const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000L

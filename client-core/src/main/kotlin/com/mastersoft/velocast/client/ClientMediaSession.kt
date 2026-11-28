@@ -101,6 +101,10 @@ class ClientMediaSession(
     }
 
     private val lifecycleHooks = object : SessionLifecycleHooks {
+        override fun onDataChannelSelected(mode: DataChannelMode, reason: String?) {
+            metrics.recordDataChannel(mode, reason)
+        }
+
         override suspend fun onBeforePause() {
             touchPipeline.flushCancelOnPauseOrDisconnect()
             frameQueue.clear(requestKeyframeAfter = false)

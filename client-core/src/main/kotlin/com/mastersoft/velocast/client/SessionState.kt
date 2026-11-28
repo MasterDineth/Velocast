@@ -4,22 +4,33 @@ import com.mastersoft.velocast.protocol.Authenticator
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.VideoSize
 
+/** Data-channel transport selected for protocol v2 traffic (`S07B`). */
+enum class DataChannelMode {
+    DIRECT_TCP,
+    ADB_TUNNEL
+}
+
 /**
  * Connection target returned by [ServerLauncher.start] once the remote server is reachable.
- * [toString] deliberately omits [authenticator] so secrets or keys are never logged.
+ * [toString] deliberately omits [authenticator] and [tunnelConnector] so secrets are never logged.
  */
 data class ServerEndpoint(
     val host: String,
     val port: Int,
     val authenticator: Authenticator,
-    val sessionId: String? = null
+    val sessionId: String? = null,
+    val dataChannelMode: DataChannelMode = DataChannelMode.DIRECT_TCP,
+    val dataChannelReason: String? = null,
+    val tunnelConnector: ClientSocketConnector? = null
 ) {
     init {
         require(host.isNotBlank()) { "host must not be blank" }
         require(port in MIN_PORT..MAX_PORT) { "port must be in $MIN_PORT..$MAX_PORT: $port" }
     }
 
-    override fun toString(): String = "ServerEndpoint(host=$host, port=$port, sessionId=$sessionId)"
+    override fun toString(): String =
+        "ServerEndpoint(host=$host, port=$port, sessionId=$sessionId, " +
+            "dataChannelMode=$dataChannelMode, dataChannelReason=$dataChannelReason)"
 
     private companion object {
         const val MIN_PORT = 1
