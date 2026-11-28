@@ -25,10 +25,12 @@ import java.net.Socket
 import java.nio.file.Files
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,7 +60,8 @@ class ClientSecurityWiringTest {
 
             ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { server ->
                 val serverThread = startDeviceInfoServer(server, serverAuth)
-                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                val scopeJob = SupervisorJob()
+                val scope = CoroutineScope(scopeJob + Dispatchers.IO)
                 val engine = SessionEngine(
                     serverLauncher = fixedEndpointLauncher(server.localPort, clientAuth),
                     transport = MirrorClient(ioDispatcher = Dispatchers.IO),
@@ -74,8 +77,10 @@ class ClientSecurityWiringTest {
                     assertEquals("M2101K6G", streaming.deviceInfo?.model)
                     engine.disconnect()
                 } finally {
-                    engine.close()
-                    scope.cancel()
+                    withContext(NonCancellable) {
+                        engine.close()
+                        scopeJob.cancelAndJoin()
+                    }
                     clientAuth.close()
                     serverAuth.close()
                     serverThread.join(2_000L)
@@ -217,7 +222,8 @@ class ClientSecurityWiringTest {
             }.apply { start() }
 
             val auth = HkdfAuthenticator(clientSecret)
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val scopeJob = SupervisorJob()
+            val scope = CoroutineScope(scopeJob + Dispatchers.IO)
             val engine = SessionEngine(
                 serverLauncher = fixedEndpointLauncher(server.localPort, auth),
                 transport = MirrorClient(ioDispatcher = Dispatchers.IO),
@@ -237,8 +243,10 @@ class ClientSecurityWiringTest {
                 }
                 assertEquals(expectedCode, failed.error.code)
             } finally {
-                engine.close()
-                scope.cancel()
+                withContext(NonCancellable) {
+                    engine.close()
+                    scopeJob.cancelAndJoin()
+                }
                 auth.close()
                 serverThread.join(2_000L)
             }

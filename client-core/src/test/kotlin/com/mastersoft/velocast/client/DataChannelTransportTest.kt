@@ -7,9 +7,11 @@ import java.io.InputStream
 import java.io.OutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -39,7 +41,8 @@ class DataChannelTransportTest {
                 ioDispatcher = Dispatchers.IO,
                 socketConnector = directConnector
             )
-            val scope = CoroutineScope(Dispatchers.IO + Job())
+            val scopeJob = SupervisorJob()
+            val scope = CoroutineScope(Dispatchers.IO + scopeJob)
             try {
                 client.connect(
                     endpoint = ServerEndpoint(
@@ -69,15 +72,18 @@ class DataChannelTransportTest {
                 assertEquals(1, directCalls)
                 assertEquals(1, tunnelCalls)
             } finally {
-                client.close()
-                scope.cancel()
+                withContext(NonCancellable) {
+                    client.close()
+                    scopeJob.cancelAndJoin()
+                }
             }
         }
 
     @Test
     fun `MirrorClient fails loudly when ADB_TUNNEL has no tunnelConnector`() = runBlocking {
         val client = MirrorClient(ioDispatcher = Dispatchers.IO)
-        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val scopeJob = SupervisorJob()
+        val scope = CoroutineScope(Dispatchers.IO + scopeJob)
         try {
             client.connect(
                 endpoint = ServerEndpoint(
@@ -94,8 +100,10 @@ class DataChannelTransportTest {
         } catch (e: IOException) {
             assertTrue(e.message?.contains("tunnelConnector") == true)
         } finally {
-            client.close()
-            scope.cancel()
+            withContext(NonCancellable) {
+                client.close()
+                scopeJob.cancelAndJoin()
+            }
         }
     }
 

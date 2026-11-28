@@ -16,9 +16,11 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -221,7 +223,8 @@ class FrameBufferPoolAndZeroAllocTest {
         totalFrames: Int,
         payloadSize: Int
     ) {
-        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val scopeJob = SupervisorJob()
+        val scope = CoroutineScope(Dispatchers.IO + scopeJob)
         val endpoint = ServerEndpoint("127.0.0.1", port, auth)
         try {
             client.connect(endpoint, readTimeoutMs = 5_000L, scope = scope)
@@ -255,8 +258,10 @@ class FrameBufferPoolAndZeroAllocTest {
             client.writeControlPacket(pkt)
             client.writeControl(ControlCommand.Bye(null))
         } finally {
-            client.close()
-            scope.cancel()
+            withContext(NonCancellable) {
+                client.close()
+                scopeJob.cancelAndJoin()
+            }
         }
     }
 }
