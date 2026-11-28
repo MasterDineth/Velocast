@@ -13,7 +13,7 @@ import javax.net.ssl.SSLSocket
 /**
  * 24-byte little-endian ADB transport packet (`packages/modules/adb/protocol.txt`).
  */
-internal class AdbPacket(
+class AdbPacket(
     val command: Int,
     val arg0: Int,
     val arg1: Int,
@@ -113,7 +113,7 @@ internal class AdbPacket(
         }
     }
 
-    internal data class DecodedHeader(
+    data class DecodedHeader(
         val command: Int,
         val arg0: Int,
         val arg1: Int,
@@ -128,10 +128,14 @@ internal class AdbPacket(
  * Keeping `readPacket` / `writePacket` packet-oriented allows TCP/TLS sockets (`S07A`) and USB OTG
  * bulk transfers (`S07C`) to share the exact same connection handshake and stream multiplexer.
  */
-internal interface AdbPacketTransport : Closeable {
+interface AdbPacketTransport : Closeable {
+    @Throws(IOException::class)
     fun readPacket(): AdbPacket
 
+    @Throws(IOException::class)
     fun writePacket(packet: AdbPacket, skipChecksum: Boolean)
+
+    fun setReadTimeout(timeoutMs: Int) = Unit
 
     fun clearReadTimeoutForMultiplexing() = Unit
 
@@ -201,9 +205,13 @@ internal class SocketAdbPacketTransport(
         }
     }
 
+    override fun setReadTimeout(timeoutMs: Int) {
+        plainSocket.soTimeout = timeoutMs
+        tlsSocket?.soTimeout = timeoutMs
+    }
+
     override fun clearReadTimeoutForMultiplexing() {
-        plainSocket.soTimeout = 0
-        tlsSocket?.soTimeout = 0
+        setReadTimeout(0)
     }
 
     override fun close() {

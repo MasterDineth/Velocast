@@ -9,12 +9,48 @@ import java.security.GeneralSecurityException
 import java.util.Collections
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Swappable ADB client abstraction (`docs/adb-library-decision.md`, `S07A` #1–#2).
+ * USB OTG client operations exposed via [AdbClient.usb] (`S07C` #1–#4).
+ */
+interface AdbUsbClient {
+    /** UI-facing USB OTG state (`Disconnected`, `CableDetected`, `Authorising`, `Ready`). */
+    val state: StateFlow<AdbUsbState>
+
+    /** Returns all currently attached USB peripherals inspected via `UsbManager`. */
+    fun attachedDevices(): List<AdbUsbDeviceDescriptor> = emptyList()
+
+    /** Registers a callback invoked when a previously connected USB phone re-attaches after reboot. */
+    fun observeReattach(listener: (AdbUsbDeviceDescriptor) -> Unit): Closeable = Closeable {}
+
+    /**
+     * Requests Android `UsbManager` host permission on the Viewer for the attached ADB cable
+     * matching [serialOrDeviceName] (or the first attached ADB device when `null`).
+     */
+    suspend fun requestPermission(serialOrDeviceName: String? = null): AdbUsbDeviceDescriptor =
+        throw AdbClientException(
+            AdbFailure.DebuggingOff("USB host transport is not configured on this AdbClient")
+        )
+
+    /**
+     * Connects to `adbd` over USB OTG (`class 0xFF, subclass 0x42, protocol 0x01`), requesting
+     * Viewer `UsbManager` permission if needed and handling the target authorisation dialog
+     * (`Authorising` / [AdbFailure.AuthExpired]).
+     */
+    suspend fun connect(
+        serialOrDeviceName: String? = null,
+        keyAlias: String = AdbKeyStore.DEFAULT_KEY_ALIAS,
+        allowInteractiveAuth: Boolean = true
+    ): AdbConnectedDevice
+}
+
+/**
+ * Swappable ADB client abstraction (`docs/adb-library-decision.md`, `S07A`–`S07C`).
  *
  * Callers in `:launcher-adb` (`AdbLauncher`, `PrepareRunner`, USB OTG) and `:app-viewer` program
  * exclusively against this interface so the underlying implementation can be replaced without
@@ -26,6 +62,14 @@ interface AdbClient : Closeable {
 
     /** Discovery state machine backing Wireless Debugging pairing and dynamic port resolution. */
     val discovery: AdbDiscovery
+
+    /** USB OTG discovery, permission, state, and connection facet (`S07C`). */
+    val usb: AdbUsbClient
+        get() = DelegatingFallbackUsbClient(this)
+
+    /** Convenience alias for `usb.state` (`Disconnected`, `CableDetected`, `Authorising`, `Ready`). */
+    val usbState: StateFlow<AdbUsbState>
+        get() = usb.state
 
     /**
      * Generates (on first call) and persists the client RSA-2048 key pair and self-signed X.509
@@ -62,12 +106,7 @@ interface AdbClient : Closeable {
     ): AdbPairingResult
 
     /**
-     * Connects to `adbd` over TLS (`_adb-tls-connect._tcp`) or legacy auth.
-     *
-     * - When [port] is `null`, discovers the current Wireless Debugging port via [discovery].
-     * - When [host] and [port] are given (e.g. a cached endpoint from an earlier session) and TCP
-     *   connection is refused because Wireless Debugging was toggled and picked a new port,
-     *   automatically re-discovers `_adb-tls-connect._tcp` on [host] before failing.
+     * Connects to `adbd` over TLS (`_adb-tls-connect._tcp`) or legacy TCP auth.
      */
     suspend fun connect(
         host: String? = null,
@@ -92,6 +131,22 @@ interface AdbClient : Closeable {
     }
 }
 
+private class DelegatingFallbackUsbClient(private val parent: AdbClient) : AdbUsbClient {
+    override val state: StateFlow<AdbUsbState> = DefaultUsbStateFlow.flow
+
+    override suspend fun connect(
+        serialOrDeviceName: String?,
+        keyAlias: String,
+        allowInteractiveAuth: Boolean
+    ): AdbConnectedDevice =
+        parent.connect(host = serialOrDeviceName, port = null, keyAlias = keyAlias)
+            .copy(transportKind = AdbTransportKind.USB)
+}
+
+private object DefaultUsbStateFlow {
+    val flow: StateFlow<AdbUsbState> = MutableStateFlow(AdbUsbState.Disconnected())
+}
+
 /** Tunable timeouts and transport hooks for [InHouseAdbClient]. */
 data class AdbClientConfig(
     val connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
@@ -99,13 +154,18 @@ data class AdbClientConfig(
     val discoveryTimeoutMs: Long = AdbDiscovery.DEFAULT_DISCOVERY_TIMEOUT_MS,
     val portRefreshDiscoveryTimeoutMs: Long = DEFAULT_PORT_REFRESH_TIMEOUT_MS,
     val streamIoTimeoutMs: Long = DEFAULT_STREAM_IO_TIMEOUT_MS,
-    val offerPublicKeyOnLegacyAuth: Boolean = false
+    val offerPublicKeyOnLegacyAuth: Boolean = false,
+    val usbPermissionTimeoutMs: Long = DEFAULT_USB_PERMISSION_TIMEOUT_MS,
+    val usbAuthPromptTimeoutMs: Int = DEFAULT_USB_AUTH_PROMPT_TIMEOUT_MS,
+    val usbWriteTimeoutMs: Int = AdbUsbTransport.DEFAULT_USB_WRITE_TIMEOUT_MS
 ) {
     companion object {
         const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
         const val DEFAULT_HANDSHAKE_READ_TIMEOUT_MS = 8_000
         const val DEFAULT_PORT_REFRESH_TIMEOUT_MS = 3_000L
         const val DEFAULT_STREAM_IO_TIMEOUT_MS = 15_000L
+        const val DEFAULT_USB_PERMISSION_TIMEOUT_MS = 30_000L
+        const val DEFAULT_USB_AUTH_PROMPT_TIMEOUT_MS = 15_000
     }
 }
 
@@ -122,15 +182,16 @@ object AdbClientFactory {
             keyStore = keyStore,
             discovery = discovery,
             errorMapper = errorMapper,
-            config = config
+            config = config,
+            usbBackend = AndroidUsbHostBackend(context)
         )
     }
 }
 
 /**
  * Default [AdbClient] implementation backed by Keystore-sealed RSA-2048 X.509 credentials,
- * Conscrypt TLS 1.3 + RFC 5705 exporter, BoringSSL-compatible SPAKE2 (`curve25519-kotlin`), and
- * packet-preserving stream multiplexing.
+ * Conscrypt TLS 1.3 + RFC 5705 exporter, BoringSSL-compatible SPAKE2 (`curve25519-kotlin`),
+ * Android USB Host bulk framing ([AdbUsbTransport]), and packet-preserving stream multiplexing.
  */
 class InHouseAdbClient internal constructor(
     private val keyStore: AdbKeyStore,
@@ -138,7 +199,7 @@ class InHouseAdbClient internal constructor(
     private val errorMapper: AdbErrorMapper = AdbErrorMapper(),
     private val config: AdbClientConfig = AdbClientConfig(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val scrubber: AdbSecretScrubber = AdbSecretScrubber.defaultInstance,
+    usbBackend: UsbHostBackend = NoOpUsbHostBackend,
     transportFactory: (String, Int) -> AdbPacketTransport = { host, port ->
         SocketAdbPacketTransport(
             host = host,
@@ -148,19 +209,60 @@ class InHouseAdbClient internal constructor(
         )
     }
 ) : AdbClient {
+    private val scrubber: AdbSecretScrubber = AdbSecretScrubber.defaultInstance
     private val sessionMutex = Mutex()
     private val knownPairedHosts: MutableSet<String> = Collections.synchronizedSet(LinkedHashSet())
+
+    @Volatile
+    private var usbDetachCallback: () -> Unit = {}
+
+    private val usbController = AdbUsbController(
+        backend = usbBackend,
+        onActiveDeviceDetached = { usbDetachCallback() }
+    )
     private val runner = AdbSessionCoordinator(
         discovery = discovery,
         errorMapper = errorMapper,
         config = config,
         ioDispatcher = ioDispatcher,
         knownPairedHosts = knownPairedHosts,
+        usbController = usbController,
         transportFactory = transportFactory
     )
 
+    init {
+        usbDetachCallback = { runner.closeUsbSessionOnDetach() }
+    }
+
     override val connectedDevice: AdbConnectedDevice?
         get() = runner.connectedDevice
+
+    override val usb: AdbUsbClient = object : AdbUsbClient {
+        override val state: StateFlow<AdbUsbState>
+            get() = usbController.state
+
+        override fun attachedDevices(): List<AdbUsbDeviceDescriptor> =
+            usbController.attachedDevices()
+
+        override fun observeReattach(listener: (AdbUsbDeviceDescriptor) -> Unit): Closeable =
+            usbController.observeReattach(listener)
+
+        override suspend fun requestPermission(
+            serialOrDeviceName: String?
+        ): AdbUsbDeviceDescriptor {
+            val target = usbController.selectTargetAdbDevice(serialOrDeviceName)
+            return usbController.ensureViewerPermission(target, config.usbPermissionTimeoutMs)
+        }
+
+        override suspend fun connect(
+            serialOrDeviceName: String?,
+            keyAlias: String,
+            allowInteractiveAuth: Boolean
+        ): AdbConnectedDevice = sessionMutex.withLock {
+            val identity = ensureKeyIdentity(keyAlias)
+            runner.connectUsb(serialOrDeviceName, identity, allowInteractiveAuth)
+        }
+    }
 
     override fun ensureKeyIdentity(alias: String): AdbKeyIdentity =
         keyStore.getOrCreateIdentity(alias)
@@ -211,7 +313,7 @@ class InHouseAdbClient internal constructor(
     override suspend fun connect(host: String?, port: Int?, keyAlias: String): AdbConnectedDevice =
         sessionMutex.withLock {
             val identity = ensureKeyIdentity(keyAlias)
-            runner.connect(host?.trim()?.takeIf(String::isNotEmpty), port, identity)
+            runner.connectWifi(host?.trim()?.takeIf(String::isNotEmpty), port, identity)
         }
 
     override suspend fun shell(command: String): AdbShellResult =
@@ -231,6 +333,7 @@ class InHouseAdbClient internal constructor(
 
     override fun close() {
         runner.closeActiveSession()
+        usbController.close()
         discovery.close()
     }
 }
@@ -241,6 +344,7 @@ private class AdbSessionCoordinator(
     private val config: AdbClientConfig,
     private val ioDispatcher: CoroutineDispatcher,
     private val knownPairedHosts: MutableSet<String>,
+    private val usbController: AdbUsbController,
     private val transportFactory: (String, Int) -> AdbPacketTransport
 ) {
     @Volatile
@@ -250,7 +354,12 @@ private class AdbSessionCoordinator(
         get() = activeSession?.takeIf { it.isOpen }?.connectedDevice
 
     fun pair(host: String, port: Int, code: String, identity: AdbKeyIdentity): AdbPairingResult {
-        val endpoint = validateEndpoint(host, port, AdbOperationStage.PAIRING)
+        val endpoint = WifiEndpointResolver.validate(
+            host,
+            port,
+            AdbOperationStage.PAIRING,
+            errorMapper
+        )
         return runMapped(AdbOperationStage.PAIRING, targetHost = endpoint.host) {
             AdbPairingProtocol.pairAsClient(
                 host = endpoint.host,
@@ -263,28 +372,60 @@ private class AdbSessionCoordinator(
         }
     }
 
-    suspend fun connect(host: String?, port: Int?, identity: AdbKeyIdentity): AdbConnectedDevice {
-        val endpoint = resolveConnectEndpoint(host, port)
+    suspend fun connectWifi(
+        host: String?,
+        port: Int?,
+        identity: AdbKeyIdentity
+    ): AdbConnectedDevice {
+        val endpoint = WifiEndpointResolver.resolve(discovery, config, errorMapper, host, port)
         val wasPaired = endpoint.host in knownPairedHosts
         closeActiveSession()
         return try {
             withContext(ioDispatcher) {
                 runMapped(AdbOperationStage.CONNECT, endpoint.host, wasPaired) {
-                    openAndActivate(endpoint, identity)
+                    openAndActivateWifi(endpoint, identity)
                 }
             }
         } catch (firstError: AdbClientException) {
-            val refreshed = if (port != null && isRefusedConnection(firstError)) {
-                tryRefreshPort(endpoint.host, endpoint.port)
-            } else {
-                null
-            }
-            if (refreshed == null) throw firstError
+            val refreshed = WifiEndpointResolver.refreshIfRefused(
+                discovery = discovery,
+                config = config,
+                endpoint = endpoint,
+                hadExplicitPort = port != null,
+                error = firstError
+            ) ?: throw firstError
             withContext(ioDispatcher) {
                 runMapped(AdbOperationStage.CONNECT, refreshed.host, wasPaired) {
-                    openAndActivate(refreshed, identity)
+                    openAndActivateWifi(refreshed, identity)
                 }
             }
+        }
+    }
+
+    suspend fun connectUsb(
+        serialOrDeviceName: String?,
+        identity: AdbKeyIdentity,
+        allowInteractiveAuth: Boolean
+    ): AdbConnectedDevice {
+        val candidate = usbController.selectTargetAdbDevice(serialOrDeviceName)
+        val permitted = usbController.ensureViewerPermission(
+            target = candidate,
+            timeoutMs = config.usbPermissionTimeoutMs
+        )
+        closeActiveSession()
+        return try {
+            withContext(ioDispatcher) {
+                runMapped(AdbOperationStage.USB_CONNECT) {
+                    openAndActivateUsb(permitted, identity, allowInteractiveAuth)
+                }
+            }
+        } catch (e: AdbClientException) {
+            usbController.registry.onSessionTransition(
+                permitted,
+                connected = null,
+                failure = e.failure
+            )
+            throw e
         }
     }
 
@@ -298,55 +439,90 @@ private class AdbSessionCoordinator(
         }
 
     fun closeActiveSession() {
-        activeSession?.close()
+        val previous = activeSession
         activeSession = null
-    }
-
-    private suspend fun resolveConnectEndpoint(host: String?, port: Int?): AdbEndpoint =
-        if (host != null && port != null) {
-            validateEndpoint(host, port, AdbOperationStage.CONNECT)
-        } else {
-            discovery.awaitService(
-                serviceType = AdbServiceType.TLS_CONNECT,
-                timeoutMs = config.discoveryTimeoutMs
-            ) { candidate ->
-                host == null || candidate.host == host
-            }.endpoint
+        val wasUsb = previous?.connectedDevice?.transportKind == AdbTransportKind.USB
+        previous?.close()
+        if (wasUsb) {
+            usbController.registry.onSessionTransition(
+                device = null,
+                connected = null,
+                failure = null
+            )
         }
-
-    private suspend fun tryRefreshPort(host: String, stalePort: Int): AdbEndpoint? = try {
-        discovery.awaitService(
-            serviceType = AdbServiceType.TLS_CONNECT,
-            timeoutMs = config.portRefreshDiscoveryTimeoutMs
-        ) { service ->
-            service.host == host && service.port != stalePort
-        }.endpoint
-    } catch (_: AdbClientException) {
-        null
     }
 
-    private fun openAndActivate(
+    fun closeUsbSessionOnDetach() {
+        val current = activeSession
+        if (current?.connectedDevice?.transportKind == AdbTransportKind.USB) {
+            activeSession = null
+            current.close()
+        }
+    }
+
+    private fun openAndActivateWifi(
         endpoint: AdbEndpoint,
         identity: AdbKeyIdentity
     ): AdbConnectedDevice {
         val transport = transportFactory(endpoint.host, endpoint.port)
-        val session = AdbConnectionSession.connect(
-            host = endpoint.host,
-            port = endpoint.port,
+        val session = AdbConnectionSession.connectWithOptions(
             transport = transport,
             identity = identity,
-            offerPublicKeyOnAuthPrompt = config.offerPublicKeyOnLegacyAuth,
-            streamIoTimeoutMs = config.streamIoTimeoutMs
+            options = AdbHandshakeOptions(
+                host = endpoint.host,
+                port = endpoint.port,
+                transportKind = AdbTransportKind.WIFI,
+                offerPublicKeyOnAuthPrompt = config.offerPublicKeyOnLegacyAuth,
+                handshakeReadTimeoutMs = config.handshakeReadTimeoutMs,
+                authPromptTimeoutMs = config.usbAuthPromptTimeoutMs,
+                streamIoTimeoutMs = config.streamIoTimeoutMs
+            )
         )
         activeSession = session
         knownPairedHosts.add(endpoint.host)
         return session.connectedDevice
     }
 
-    private fun validateEndpoint(host: String, port: Int, stage: AdbOperationStage): AdbEndpoint =
-        runMapped(stage, targetHost = host) {
-            AdbEndpoint(host, port)
-        }
+    private fun openAndActivateUsb(
+        device: AdbUsbDeviceDescriptor,
+        identity: AdbKeyIdentity,
+        allowInteractiveAuth: Boolean
+    ): AdbConnectedDevice {
+        val bulkConnection = usbController.openBulkConnection(device)
+        val transport = AdbUsbTransport(
+            connection = bulkConnection,
+            handshakeReadTimeoutMs = config.handshakeReadTimeoutMs,
+            writeTimeoutMs = config.usbWriteTimeoutMs
+        )
+        val usbHostLabel = "usb:${device.serialNumber ?: device.deviceName}"
+        val session = AdbConnectionSession.connectWithOptions(
+            transport = transport,
+            identity = identity,
+            options = AdbHandshakeOptions(
+                host = usbHostLabel,
+                port = 0,
+                transportKind = AdbTransportKind.USB,
+                usbSerialNumber = device.serialNumber,
+                offerPublicKeyOnAuthPrompt = allowInteractiveAuth,
+                handshakeReadTimeoutMs = config.handshakeReadTimeoutMs,
+                authPromptTimeoutMs = config.usbAuthPromptTimeoutMs,
+                streamIoTimeoutMs = config.streamIoTimeoutMs,
+                onAuthPromptRequired = {
+                    usbController.registry.onAuthorising(
+                        device,
+                        AdbUsbAuthStage.DEVICE_ADB_APPROVAL
+                    )
+                }
+            )
+        )
+        activeSession = session
+        usbController.registry.onSessionTransition(
+            device = device,
+            connected = session.connectedDevice,
+            failure = null
+        )
+        return session.connectedDevice
+    }
 
     private inline fun <T> runMapped(
         stage: AdbOperationStage,
@@ -364,9 +540,56 @@ private class AdbSessionCoordinator(
     } catch (e: IllegalArgumentException) {
         throw AdbClientException(errorMapper.map(e, stage, targetHost, wasPaired), e)
     }
+}
 
-    private fun isRefusedConnection(error: AdbClientException): Boolean {
+private object WifiEndpointResolver {
+    fun validate(
+        host: String,
+        port: Int,
+        stage: AdbOperationStage,
+        errorMapper: AdbErrorMapper
+    ): AdbEndpoint = try {
+        AdbEndpoint(host, port)
+    } catch (e: IllegalArgumentException) {
+        throw AdbClientException(errorMapper.map(e, stage, targetHost = host), e)
+    }
+
+    suspend fun resolve(
+        discovery: AdbDiscovery,
+        config: AdbClientConfig,
+        errorMapper: AdbErrorMapper,
+        host: String?,
+        port: Int?
+    ): AdbEndpoint = if (host != null && port != null) {
+        validate(host, port, AdbOperationStage.CONNECT, errorMapper)
+    } else {
+        discovery.awaitService(
+            serviceType = AdbServiceType.TLS_CONNECT,
+            timeoutMs = config.discoveryTimeoutMs
+        ) { candidate ->
+            host == null || candidate.host == host
+        }.endpoint
+    }
+
+    suspend fun refreshIfRefused(
+        discovery: AdbDiscovery,
+        config: AdbClientConfig,
+        endpoint: AdbEndpoint,
+        hadExplicitPort: Boolean,
+        error: AdbClientException
+    ): AdbEndpoint? {
         val root = error.cause
-        return root is ConnectException || root?.cause is ConnectException
+        val refused = root is ConnectException || root?.cause is ConnectException
+        if (!hadExplicitPort || !refused) return null
+        return try {
+            discovery.awaitService(
+                serviceType = AdbServiceType.TLS_CONNECT,
+                timeoutMs = config.portRefreshDiscoveryTimeoutMs
+            ) { service ->
+                service.host == endpoint.host && service.port != endpoint.port
+            }.endpoint
+        } catch (_: AdbClientException) {
+            null
+        }
     }
 }

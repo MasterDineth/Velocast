@@ -1,6 +1,7 @@
 package com.mastersoft.velocast.launcher.adb
 
 import java.io.Closeable
+import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
@@ -15,6 +16,18 @@ import java.util.concurrent.locks.ReentrantLock
 import javax.net.ssl.SSLHandshakeException
 import kotlin.concurrent.withLock
 
+/**
+ * Raised when `adbd` rejects our `ADB_AUTH_SIGNATURE` and requires an on-device confirmation
+ * dialog (`ADB_AUTH_RSAPUBLICKEY`), and either interactive approval is disabled or the user does
+ * not approve the dialog before timeout/disconnect (`S07C` #2).
+ */
+class AdbAuthorizationRequiredException(message: String, cause: Throwable? = null) :
+    SSLHandshakeException(message) {
+    init {
+        if (cause != null) initCause(cause)
+    }
+}
+
 /** Metadata negotiated from `adbd`'s `A_CNXN` banner upon connection. */
 data class AdbConnectedDevice(
     val host: String,
@@ -25,7 +38,9 @@ data class AdbConnectedDevice(
     val device: String? = null,
     val features: Set<String> = emptySet(),
     val isTls: Boolean = false,
-    val maxData: Int = AdbPacket.DEFAULT_MAX_DATA
+    val maxData: Int = AdbPacket.DEFAULT_MAX_DATA,
+    val transportKind: AdbTransportKind = AdbTransportKind.WIFI,
+    val usbSerialNumber: String? = null
 )
 
 /**
@@ -176,6 +191,21 @@ internal class AdbConnectionSession private constructor(
             identity: AdbKeyIdentity,
             offerPublicKeyOnAuthPrompt: Boolean = false,
             streamIoTimeoutMs: Long = 15_000L
+        ): AdbConnectionSession = connectWithOptions(
+            transport = transport,
+            identity = identity,
+            options = AdbHandshakeOptions(
+                host = host,
+                port = port,
+                offerPublicKeyOnAuthPrompt = offerPublicKeyOnAuthPrompt,
+                streamIoTimeoutMs = streamIoTimeoutMs
+            )
+        )
+
+        fun connectWithOptions(
+            transport: AdbPacketTransport,
+            identity: AdbKeyIdentity,
+            options: AdbHandshakeOptions
         ): AdbConnectionSession {
             var succeeded = false
             try {
@@ -188,17 +218,8 @@ internal class AdbConnectionSession private constructor(
                     ),
                     skipChecksum = false
                 )
-                val handshakeResult = completeHandshake(
-                    transport = transport,
-                    identity = identity,
-                    offerPublicKeyOnAuthPrompt = offerPublicKeyOnAuthPrompt
-                )
-                val device = parseBanner(
-                    host = host,
-                    port = port,
-                    packet = handshakeResult.cnxnPacket,
-                    isTls = handshakeResult.isTls
-                )
+                val handshakeResult = completeHandshake(transport, identity, options)
+                val device = parseBanner(options, handshakeResult.cnxnPacket, handshakeResult.isTls)
                 val skipChecksum =
                     (
                         handshakeResult.cnxnPacket.arg0.toUInt() >=
@@ -208,7 +229,7 @@ internal class AdbConnectionSession private constructor(
                     transport = transport,
                     connectedDevice = device,
                     skipChecksum = skipChecksum,
-                    streamIoTimeoutMs = streamIoTimeoutMs
+                    streamIoTimeoutMs = options.streamIoTimeoutMs
                 )
                 session.startDemux()
                 succeeded = true
@@ -223,7 +244,7 @@ internal class AdbConnectionSession private constructor(
         private fun completeHandshake(
             transport: AdbPacketTransport,
             identity: AdbKeyIdentity,
-            offerPublicKeyOnAuthPrompt: Boolean
+            options: AdbHandshakeOptions
         ): HandshakeOutcome {
             var packet = transport.readPacket()
             var isTls = false
@@ -236,7 +257,7 @@ internal class AdbConnectionSession private constructor(
                 isTls = true
                 packet = transport.readPacket()
             } else if (packet.command == AdbPacket.A_AUTH) {
-                packet = completeLegacyAuth(transport, identity, packet, offerPublicKeyOnAuthPrompt)
+                packet = completeLegacyAuth(transport, identity, packet, options)
             }
             if (packet.command != AdbPacket.A_CNXN) {
                 throw SSLHandshakeException(
@@ -252,7 +273,7 @@ internal class AdbConnectionSession private constructor(
             transport: AdbPacketTransport,
             identity: AdbKeyIdentity,
             firstAuth: AdbPacket,
-            offerPublicKey: Boolean
+            options: AdbHandshakeOptions
         ): AdbPacket {
             if (firstAuth.arg0 != AdbPacket.ADB_AUTH_TOKEN) {
                 throw IOException("Unexpected ADB AUTH arg0: ${firstAuth.arg0}")
@@ -267,26 +288,59 @@ internal class AdbConnectionSession private constructor(
             )
             var next = transport.readPacket()
             if (next.command == AdbPacket.A_AUTH) {
-                if (!offerPublicKey) {
-                    throw SSLHandshakeException("ADB RSA key is unauthorized or expired")
+                if (!options.offerPublicKeyOnAuthPrompt) {
+                    throw AdbAuthorizationRequiredException(
+                        "ADB RSA key is unauthorized or expired; on-device approval required"
+                    )
                 }
-                transport.writePacket(
-                    AdbPacket(
-                        AdbPacket.A_AUTH,
-                        AdbPacket.ADB_AUTH_RSAPUBLICKEY,
-                        0,
-                        identity.encodedAuthorizedKey()
-                    ),
-                    skipChecksum = false
-                )
-                next = transport.readPacket()
+                options.onAuthPromptRequired()
+                next = offerPublicKeyAndAwaitApproval(transport, identity, options)
             }
             return next
         }
 
+        private fun offerPublicKeyAndAwaitApproval(
+            transport: AdbPacketTransport,
+            identity: AdbKeyIdentity,
+            options: AdbHandshakeOptions
+        ): AdbPacket {
+            transport.setReadTimeout(options.authPromptTimeoutMs)
+            transport.writePacket(
+                AdbPacket(
+                    AdbPacket.A_AUTH,
+                    AdbPacket.ADB_AUTH_RSAPUBLICKEY,
+                    0,
+                    identity.encodedAuthorizedKey()
+                ),
+                skipChecksum = false
+            )
+            val reply = readApprovalPacketOrThrow(transport)
+            transport.setReadTimeout(options.handshakeReadTimeoutMs)
+            if (reply.command != AdbPacket.A_CNXN) {
+                throw AdbAuthorizationRequiredException(
+                    "On-device USB debugging approval did not complete " +
+                        "(received ${AdbPacket.commandName(reply.command)})"
+                )
+            }
+            return reply
+        }
+
+        private fun readApprovalPacketOrThrow(transport: AdbPacketTransport): AdbPacket = try {
+            transport.readPacket()
+        } catch (e: SocketTimeoutException) {
+            throw AdbAuthorizationRequiredException(
+                "Timed out waiting for on-device USB debugging approval",
+                e
+            )
+        } catch (e: EOFException) {
+            throw AdbAuthorizationRequiredException(
+                "On-device USB debugging approval was declined or interrupted",
+                e
+            )
+        }
+
         private fun parseBanner(
-            host: String,
-            port: Int,
+            options: AdbHandshakeOptions,
             packet: AdbPacket,
             isTls: Boolean
         ): AdbConnectedDevice {
@@ -308,21 +362,35 @@ internal class AdbConnectionSession private constructor(
                 ?.toSet()
                 .orEmpty()
             return AdbConnectedDevice(
-                host = host,
-                port = port,
+                host = options.host,
+                port = options.port,
                 banner = banner,
                 productName = props["ro.product.name"],
                 model = props["ro.product.model"],
                 device = props["ro.product.device"],
                 features = features,
                 isTls = isTls,
-                maxData = packet.arg1.coerceAtLeast(MIN_MAX_DATA)
+                maxData = packet.arg1.coerceAtLeast(MIN_MAX_DATA),
+                transportKind = options.transportKind,
+                usbSerialNumber = options.usbSerialNumber
             )
         }
 
         private data class HandshakeOutcome(val cnxnPacket: AdbPacket, val isTls: Boolean)
     }
 }
+
+internal data class AdbHandshakeOptions(
+    val host: String,
+    val port: Int,
+    val transportKind: AdbTransportKind = AdbTransportKind.WIFI,
+    val usbSerialNumber: String? = null,
+    val offerPublicKeyOnAuthPrompt: Boolean = false,
+    val handshakeReadTimeoutMs: Int = AdbClientConfig.DEFAULT_HANDSHAKE_READ_TIMEOUT_MS,
+    val authPromptTimeoutMs: Int = AdbClientConfig.DEFAULT_USB_AUTH_PROMPT_TIMEOUT_MS,
+    val streamIoTimeoutMs: Long = AdbClientConfig.DEFAULT_STREAM_IO_TIMEOUT_MS,
+    val onAuthPromptRequired: () -> Unit = {}
+)
 
 private class MultiplexedAdbStream(
     private val session: AdbConnectionSession,

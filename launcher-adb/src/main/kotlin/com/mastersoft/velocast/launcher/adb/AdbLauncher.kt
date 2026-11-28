@@ -4,6 +4,7 @@ import com.mastersoft.velocast.client.DataChannelMode
 import com.mastersoft.velocast.client.LaunchPhase
 import com.mastersoft.velocast.client.ServerEndpoint
 import com.mastersoft.velocast.client.ServerLauncher
+import com.mastersoft.velocast.client.SessionEngine
 import com.mastersoft.velocast.client.SessionError
 import com.mastersoft.velocast.client.SessionErrorException
 import com.mastersoft.velocast.protocol.AuthMode
@@ -63,7 +64,10 @@ data class AdbLauncherConfig(
     val dataChannelPreference: DataChannelPreference = DataChannelPreference.AUTO,
     val remoteJarPath: String = DEFAULT_REMOTE_JAR_PATH,
     val readyTimeoutMs: Long = DEFAULT_READY_TIMEOUT_MS,
-    val bindHostOverride: String? = null
+    val bindHostOverride: String? = null,
+    val usbSerial: String? = null,
+    val autoSelectUsbWhenWifiUnavailable: Boolean = true,
+    val allowInteractiveUsbAuth: Boolean = true
 ) {
     init {
         require(remoteJarPath.isNotBlank()) { "remoteJarPath must not be blank" }
@@ -139,6 +143,10 @@ class AdbLauncher(
     val lastDataChannelDecision: StateFlow<DataChannelDecision?> =
         _lastDataChannelDecision.asStateFlow()
 
+    /** UI-facing USB OTG state (`Disconnected`, `CableDetected`, `Authorising`, `Ready`). */
+    val usbState: StateFlow<AdbUsbState>
+        get() = adbClient.usbState
+
     @Volatile
     private var activeShellStream: AdbByteStream? = null
 
@@ -151,14 +159,29 @@ class AdbLauncher(
     @Volatile
     private var preferTunnelForSession: Boolean = false
 
+    @Volatile
+    private var hasRecoverableSession: Boolean = false
+
+    /**
+     * Wakes [sessionEngine]'s reconnect backoff immediately whenever a previously connected USB OTG
+     * phone finishes rebooting and re-enumerates on the USB bus (`S07C` #2).
+     */
+    fun bindUsbReconnectTrigger(sessionEngine: SessionEngine): Closeable =
+        adbClient.usb.observeReattach { sessionEngine.retryNow() }
+
     override suspend fun start(onPhase: (LaunchPhase) -> Unit): ServerEndpoint =
         lifecycleMutex.withLock {
             stopActiveProcessLocked()
-            if (config.host == null || config.port == null) {
+            if (AdbLauncherTransportConnector.shouldEmitDiscovering(config, adbClient)) {
                 onPhase(LaunchPhase.DISCOVERING)
             }
             onPhase(LaunchPhase.CONNECTING)
-            val connected = connectAdb()
+            val connected = AdbLauncherTransportConnector.connect(
+                adbClient = adbClient,
+                config = config,
+                hasRecoverableSession = hasRecoverableSession,
+                onDiagnostics = onDiagnostics
+            )
 
             onPhase(LaunchPhase.STARTING_SERVER)
             RemoteServerJarSync.ensureSynced(
@@ -171,7 +194,9 @@ class AdbLauncher(
             )
 
             val selection = DataChannelSelector.select(config, connected, preferTunnelForSession)
-            launchServerProcessLocked(selection)
+            launchServerProcessLocked(selection).also {
+                hasRecoverableSession = true
+            }
         }
 
     override suspend fun fallbackAfterDirectConnectFailure(
@@ -203,11 +228,13 @@ class AdbLauncher(
 
     override suspend fun stop() {
         lifecycleMutex.withLock {
+            hasRecoverableSession = false
             stopActiveProcessLocked()
         }
     }
 
     override fun close() {
+        hasRecoverableSession = false
         activeDrainJob?.cancel()
         activeDrainJob = null
         closeQuietly(activeShellStream)
@@ -215,16 +242,6 @@ class AdbLauncher(
         activeAuthenticator?.close()
         activeAuthenticator = null
         drainScope.cancel()
-    }
-
-    private suspend fun connectAdb(): AdbConnectedDevice = try {
-        adbClient.connect(
-            host = config.host,
-            port = config.port,
-            keyAlias = config.keyAlias
-        )
-    } catch (e: AdbClientException) {
-        throw SessionErrorException(e.failure.toSessionError(), e)
     }
 
     private suspend fun launchServerProcessLocked(selection: ChannelSelection): ServerEndpoint {
@@ -402,6 +419,93 @@ private object RemoteServerJarSync {
         }
 }
 
+private object AdbLauncherTransportConnector {
+    private const val CATEGORY_DATA_CHANNEL = "DATA_CHANNEL"
+
+    fun shouldEmitDiscovering(config: AdbLauncherConfig, adbClient: AdbClient): Boolean =
+        config.transportKind != AdbTransportKind.USB &&
+            (config.host == null || config.port == null) &&
+            adbClient.usbState.value !is AdbUsbState.Ready
+
+    suspend fun connect(
+        adbClient: AdbClient,
+        config: AdbLauncherConfig,
+        hasRecoverableSession: Boolean,
+        onDiagnostics: (String, String) -> Unit
+    ): AdbConnectedDevice = try {
+        if (config.transportKind == AdbTransportKind.USB) {
+            adbClient.usb.connect(
+                serialOrDeviceName = config.usbSerial ?: config.host,
+                keyAlias = config.keyAlias,
+                allowInteractiveAuth = config.allowInteractiveUsbAuth
+            )
+        } else {
+            connectWifiWithAutoUsbFallback(adbClient, config, onDiagnostics)
+        }
+    } catch (e: AdbClientException) {
+        throw SessionErrorException(mapLaunchFailure(e.failure, hasRecoverableSession), e)
+    }
+
+    private suspend fun connectWifiWithAutoUsbFallback(
+        adbClient: AdbClient,
+        config: AdbLauncherConfig,
+        onDiagnostics: (String, String) -> Unit
+    ): AdbConnectedDevice = try {
+        adbClient.connect(
+            host = config.host,
+            port = config.port,
+            keyAlias = config.keyAlias
+        )
+    } catch (wifiError: AdbClientException) {
+        if (canAutoFallbackToUsb(wifiError.failure, config, adbClient)) {
+            onDiagnostics(
+                CATEGORY_DATA_CHANNEL,
+                "Wi-Fi ADB unavailable (${wifiError.failure.errorCode}); " +
+                    "choosing attached USB OTG cable"
+            )
+            adbClient.usb.connect(
+                serialOrDeviceName = config.usbSerial,
+                keyAlias = config.keyAlias,
+                allowInteractiveAuth = config.allowInteractiveUsbAuth
+            )
+        } else {
+            throw wifiError
+        }
+    }
+
+    private fun canAutoFallbackToUsb(
+        wifiFailure: AdbFailure,
+        config: AdbLauncherConfig,
+        adbClient: AdbClient
+    ): Boolean {
+        val wifiUnavailable = wifiFailure is AdbFailure.DebuggingOff ||
+            wifiFailure is AdbFailure.DifferentNetwork ||
+            wifiFailure is AdbFailure.TransportError
+        return config.autoSelectUsbWhenWifiUnavailable &&
+            wifiUnavailable &&
+            adbClient.usb.attachedDevices().any { it.hasAdbInterface }
+    }
+
+    private fun mapLaunchFailure(
+        failure: AdbFailure,
+        hasRecoverableSession: Boolean
+    ): SessionError {
+        val isTransientRebootGap = hasRecoverableSession &&
+            (
+                failure is AdbFailure.DebuggingOff ||
+                    failure is AdbFailure.DifferentNetwork ||
+                    failure is AdbFailure.TransportError
+                )
+        return if (isTransientRebootGap) {
+            SessionError.LinkLost(
+                failure.detail ?: "Waiting for target device to finish rebooting"
+            )
+        } else {
+            failure.toSessionError()
+        }
+    }
+}
+
 private object DataChannelSelector {
     fun select(
         config: AdbLauncherConfig,
@@ -410,8 +514,10 @@ private object DataChannelSelector {
     ): ChannelSelection {
         val candidateIp = (config.bindHostOverride ?: connected.host).trim()
         val directIp = candidateIp.takeIf { IpLiteralCheck.isNonLoopbackIpLiteral(it) }
+        val isUsb = config.transportKind == AdbTransportKind.USB ||
+            connected.transportKind == AdbTransportKind.USB
         return when {
-            config.transportKind == AdbTransportKind.USB -> ChannelSelection(
+            isUsb -> ChannelSelection(
                 mode = DataChannelMode.ADB_TUNNEL,
                 reason = AdbLauncher.REASON_USB_TRANSPORT,
                 bindArg = AdbLauncher.BIND_LOOPBACK,

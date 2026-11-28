@@ -90,6 +90,7 @@ enum class AdbOperationStage {
     DISCOVERY,
     PAIRING,
     CONNECT,
+    USB_CONNECT,
     STREAM
 }
 
@@ -238,8 +239,21 @@ class AdbErrorMapper(
             AdbOperationStage.CONNECT ->
                 mapConnectFailure(throwable, net, targetHost, wasPreviouslyPaired, rawDetail)
 
+            AdbOperationStage.USB_CONNECT -> mapUsbConnectFailure(throwable, rawDetail)
+
             AdbOperationStage.STREAM -> AdbFailure.TransportError(rawDetail)
         }
+    }
+
+    private fun mapUsbConnectFailure(throwable: Throwable, detail: String): AdbFailure = when {
+        throwable is AdbAuthorizationRequiredException -> AdbFailure.AuthExpired(detail)
+
+        throwable is SocketTimeoutException -> AdbFailure.DebuggingOff(detail)
+
+        ThrowableChainInspectors.isConnectAuthRejection(throwable) &&
+            throwable !is EOFException -> AdbFailure.AuthExpired(detail)
+
+        else -> AdbFailure.TransportError(detail)
     }
 
     fun mapDiscoveryTimeout(serviceType: AdbServiceType, targetHost: String? = null): AdbFailure {
@@ -259,7 +273,7 @@ class AdbErrorMapper(
         targetHost: String?,
         detail: String
     ): AdbFailure = if (!net.isLanAvailable ||
-        isUnreachableNetworkError(throwable) ||
+        ThrowableChainInspectors.isUnreachableNetworkError(throwable) ||
         net.isTargetOnDifferentIpv4Subnet(targetHost)
     ) {
         AdbFailure.DifferentNetwork(detail)
@@ -274,7 +288,7 @@ class AdbErrorMapper(
         detail: String
     ): AdbFailure = when {
         !net.isLanAvailable ||
-            isUnreachableNetworkError(throwable) ||
+            ThrowableChainInspectors.isUnreachableNetworkError(throwable) ||
             (
                 throwable is SocketTimeoutException && net.isTargetOnDifferentIpv4Subnet(
                     targetHost
@@ -282,10 +296,10 @@ class AdbErrorMapper(
                 ) ->
             AdbFailure.DifferentNetwork(detail)
 
-        isConnectionRefused(throwable) || throwable is SocketTimeoutException ->
-            AdbFailure.DebuggingOff(detail)
+        ThrowableChainInspectors.isConnectionRefused(throwable) ||
+            throwable is SocketTimeoutException -> AdbFailure.DebuggingOff(detail)
 
-        isPairingAuthFailure(throwable) ->
+        ThrowableChainInspectors.isPairingAuthFailure(throwable) ->
             AdbFailure.WrongPairingCode(detail)
 
         else -> AdbFailure.WrongPairingCode(detail)
@@ -299,7 +313,7 @@ class AdbErrorMapper(
         detail: String
     ): AdbFailure = when {
         !net.isLanAvailable ||
-            isUnreachableNetworkError(throwable) ||
+            ThrowableChainInspectors.isUnreachableNetworkError(throwable) ||
             (
                 throwable is SocketTimeoutException && net.isTargetOnDifferentIpv4Subnet(
                     targetHost
@@ -307,10 +321,10 @@ class AdbErrorMapper(
                 ) ->
             AdbFailure.DifferentNetwork(detail)
 
-        isConnectionRefused(throwable) || throwable is SocketTimeoutException ->
-            AdbFailure.DebuggingOff(detail)
+        ThrowableChainInspectors.isConnectionRefused(throwable) ||
+            throwable is SocketTimeoutException -> AdbFailure.DebuggingOff(detail)
 
-        isConnectAuthRejection(throwable) ->
+        ThrowableChainInspectors.isConnectAuthRejection(throwable) ->
             authFailureForConnect(wasPreviouslyPaired, detail)
 
         else -> AdbFailure.TransportError(detail)
@@ -322,20 +336,21 @@ class AdbErrorMapper(
         } else {
             AdbFailure.NotPaired(detail)
         }
+}
 
-    private fun isConnectionRefused(throwable: Throwable): Boolean {
-        val chain = causalChain(throwable)
-        return chain.any { cause ->
-            cause is ConnectException ||
-                cause.message?.lowercase(Locale.ROOT)?.let { msg ->
-                    "econnrefused" in msg || "connection refused" in msg
-                } == true
-        }
+private object ThrowableChainInspectors {
+    private const val CAUSE_INITIAL_CAPACITY = 4
+    private const val MAX_CAUSE_DEPTH = 8
+
+    fun isConnectionRefused(throwable: Throwable): Boolean = causalChain(throwable).any { cause ->
+        cause is ConnectException ||
+            cause.message?.lowercase(Locale.ROOT)?.let { msg ->
+                "econnrefused" in msg || "connection refused" in msg
+            } == true
     }
 
-    private fun isUnreachableNetworkError(throwable: Throwable): Boolean {
-        val chain = causalChain(throwable)
-        return chain.any { cause ->
+    fun isUnreachableNetworkError(throwable: Throwable): Boolean =
+        causalChain(throwable).any { cause ->
             cause is NoRouteToHostException ||
                 cause is UnknownHostException ||
                 cause.message?.lowercase(Locale.ROOT)?.let { msg ->
@@ -345,22 +360,17 @@ class AdbErrorMapper(
                         "no route to host" in msg
                 } == true
         }
+
+    fun isPairingAuthFailure(throwable: Throwable): Boolean = causalChain(throwable).any { cause ->
+        cause is AEADBadTagException ||
+            cause is GeneralSecurityException ||
+            cause is EOFException ||
+            cause is SSLException ||
+            cause is SocketException
     }
 
-    private fun isPairingAuthFailure(throwable: Throwable): Boolean {
-        val chain = causalChain(throwable)
-        return chain.any { cause ->
-            cause is AEADBadTagException ||
-                cause is GeneralSecurityException ||
-                cause is EOFException ||
-                cause is SSLException ||
-                cause is SocketException
-        }
-    }
-
-    private fun isConnectAuthRejection(throwable: Throwable): Boolean {
-        val chain = causalChain(throwable)
-        return chain.any { cause ->
+    fun isConnectAuthRejection(throwable: Throwable): Boolean =
+        causalChain(throwable).any { cause ->
             cause is SSLHandshakeException ||
                 cause is SSLException ||
                 cause is GeneralSecurityException ||
@@ -373,7 +383,6 @@ class AdbErrorMapper(
                         "connection reset" in msg
                 } == true
         }
-    }
 
     private fun causalChain(root: Throwable): List<Throwable> {
         val list = ArrayList<Throwable>(CAUSE_INITIAL_CAPACITY)
@@ -383,10 +392,5 @@ class AdbErrorMapper(
             current = current.cause
         }
         return list
-    }
-
-    private companion object {
-        const val CAUSE_INITIAL_CAPACITY = 4
-        const val MAX_CAUSE_DEPTH = 8
     }
 }
