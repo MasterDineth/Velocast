@@ -2,6 +2,7 @@ package com.mastersoft.velocast
 
 import android.annotation.SuppressLint
 import android.content.ContentValues
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
@@ -28,18 +29,21 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.mastersoft.velocast.client.AndroidKeyStoreSecretStore
 import com.mastersoft.velocast.client.ClientMediaSession
-import com.mastersoft.velocast.client.HmacSha256Authenticator
 import com.mastersoft.velocast.client.LaunchPhase
 import com.mastersoft.velocast.client.ServerEndpoint
 import com.mastersoft.velocast.client.ServerLauncher
 import com.mastersoft.velocast.client.SessionConfig
 import com.mastersoft.velocast.client.SessionState
 import com.mastersoft.velocast.client.StreamConfig
+import com.mastersoft.velocast.protocol.AuthMode
 import com.mastersoft.velocast.protocol.DeviceAction
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.KeyCodes
 import com.mastersoft.velocast.protocol.ProtocolV2
-import java.security.SecureRandom
+import com.mastersoft.velocast.protocol.SecretRedactor
+import com.mastersoft.velocast.protocol.SessionSecrets
 import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +62,7 @@ class MirrorActivity :
         const val EXTRA_BITRATE = "extra_bitrate"
         const val EXTRA_FPS = "extra_fps"
         const val EXTRA_SCALE = "extra_scale"
+        const val EXTRA_SECRET_ALIAS = "extra_secret_alias"
         const val EXTRA_SECRET_HEX = "extra_secret_hex"
     }
 
@@ -79,6 +84,7 @@ class MirrorActivity :
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var mediaSession: ClientMediaSession? = null
+    private var sessionAuthenticator: HkdfAuthenticator? = null
     private var sessionStarted = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -122,12 +128,14 @@ class MirrorActivity :
         fabToggleBtn = findViewById(R.id.fabToggleBtn)
         fabChevronIcon = findViewById(R.id.fabChevronIcon)
 
-        val session = MirrorSessionFactory.create(
+        val (session, auth) = MirrorSessionFactory.create(
+            context = applicationContext,
             host = host,
             port = port,
             bitrateBps = bitrateBps,
             fps = fps,
             resolutionScale = resolutionScale,
+            secretAlias = intent.getStringExtra(EXTRA_SECRET_ALIAS),
             secretHex = intent.getStringExtra(EXTRA_SECRET_HEX),
             scope = activityScope,
             onVideoSizeChanged = { w, h ->
@@ -135,6 +143,7 @@ class MirrorActivity :
             }
         )
         mediaSession = session
+        sessionAuthenticator = auth
 
         touchController = TouchOverlayController(
             container = mirrorRoot,
@@ -190,7 +199,8 @@ class MirrorActivity :
                         isConnected = false
                         renderHudText()
                         if (!isFinishing && !isDestroyed) {
-                            val msg = state.error.detail ?: state.error.code.name
+                            val rawMsg = state.error.detail ?: state.error.code.name
+                            val msg = SecretRedactor.redact(rawMsg)
                             Log.e("MirrorActivity", "Session failed: ${state.error.code}")
                             Toast.makeText(
                                 this@MirrorActivity,
@@ -674,6 +684,8 @@ class MirrorActivity :
         mainHandler.removeCallbacks(fabFadeRunnable)
         mediaSession?.close()
         mediaSession = null
+        sessionAuthenticator?.close()
+        sessionAuthenticator = null
         activityScope.cancel()
         super.onDestroy()
     }
@@ -688,21 +700,23 @@ class MirrorActivity :
 }
 
 private object MirrorSessionFactory {
-    private const val SECRET_BYTES = 32
     private const val HEX_RADIX = 16
     private const val NIBBLE_BITS = 4
 
+    @Suppress("LongParameterList")
     fun create(
+        context: Context,
         host: String,
         port: Int,
         bitrateBps: Int,
         fps: Int,
         resolutionScale: Float,
+        secretAlias: String?,
         secretHex: String?,
         scope: CoroutineScope,
         onVideoSizeChanged: (width: Int, height: Int) -> Unit
-    ): ClientMediaSession {
-        val authenticator = buildAuthenticator(secretHex)
+    ): Pair<ClientMediaSession, HkdfAuthenticator> {
+        val authenticator = buildAuthenticator(context, secretAlias, secretHex)
         val endpoint = ServerEndpoint(host = host, port = port, authenticator = authenticator)
         val launcher = object : ServerLauncher {
             override suspend fun start(onPhase: (LaunchPhase) -> Unit): ServerEndpoint {
@@ -720,19 +734,32 @@ private object MirrorSessionFactory {
             fps = fps.coerceIn(ProtocolV2.MIN_FPS, ProtocolV2.MAX_FPS),
             scale = resolutionScale.coerceIn(ProtocolV2.MIN_SCALE, ProtocolV2.MAX_SCALE)
         )
-        return ClientMediaSession(
+        val mediaSession = ClientMediaSession(
             serverLauncher = launcher,
             scope = scope,
             config = SessionConfig(initialStreamConfig = streamConfig),
             onVideoSizeChanged = onVideoSizeChanged
         )
+        return mediaSession to authenticator
     }
 
-    private fun buildAuthenticator(secretHex: String?): HmacSha256Authenticator {
-        val secretBytes = decodeHexSecretOrNull(secretHex)
-            ?: ByteArray(SECRET_BYTES).also { SecureRandom().nextBytes(it) }
+    private fun buildAuthenticator(
+        context: Context,
+        secretAlias: String?,
+        secretHex: String?
+    ): HkdfAuthenticator {
+        val keyStore = AndroidKeyStoreSecretStore(context)
+        val storedAlias = secretAlias?.takeIf { it.isNotBlank() }
+            ?: AndroidKeyStoreSecretStore.DEFAULT_PAIRING_ALIAS.takeIf {
+                secretHex.isNullOrBlank() && keyStore.hasSecret(it)
+            }
+        val fromStore = storedAlias?.let { keyStore.getSecret(it) }
+        val mode = if (fromStore != null) AuthMode.PAIRING_SECRET else AuthMode.SESSION_SECRET
+        val secretBytes = fromStore
+            ?: decodeHexSecretOrNull(secretHex)
+            ?: SessionSecrets.generate()
         return try {
-            HmacSha256Authenticator(secretBytes)
+            HkdfAuthenticator(secretBytes, mode)
         } finally {
             secretBytes.fill(0)
         }
@@ -740,23 +767,20 @@ private object MirrorSessionFactory {
 
     private fun decodeHexSecretOrNull(hex: String?): ByteArray? {
         var result: ByteArray? = null
-        val evenHex = !hex.isNullOrBlank() && hex.length % 2 == 0
-        if (evenHex) {
-            val len = hex.length / 2
-            if (len >= HmacSha256Authenticator.MIN_SECRET_BYTES) {
-                val bytes = ByteArray(len)
-                var valid = true
-                for (i in 0 until len) {
-                    val hi = Character.digit(hex[i * 2], HEX_RADIX)
-                    val lo = Character.digit(hex[i * 2 + 1], HEX_RADIX)
-                    if (hi < 0 || lo < 0) {
-                        valid = false
-                        break
-                    }
-                    bytes[i] = ((hi shl NIBBLE_BITS) or lo).toByte()
+        val expectedHexLen = ProtocolV2.SECRET_SIZE * 2
+        if (!hex.isNullOrBlank() && hex.length == expectedHexLen) {
+            val bytes = ByteArray(ProtocolV2.SECRET_SIZE)
+            var valid = true
+            for (i in 0 until ProtocolV2.SECRET_SIZE) {
+                val hi = Character.digit(hex[i * 2], HEX_RADIX)
+                val lo = Character.digit(hex[i * 2 + 1], HEX_RADIX)
+                if (hi < 0 || lo < 0) {
+                    valid = false
+                    break
                 }
-                if (valid) result = bytes else bytes.fill(0)
+                bytes[i] = ((hi shl NIBBLE_BITS) or lo).toByte()
             }
+            if (valid) result = bytes else bytes.fill(0)
         }
         return result
     }

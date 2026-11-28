@@ -361,11 +361,12 @@ Recommendation: Add LICENSE (needed before sharing), docs/protocol.md, docs/trou
 
 ---
 
-## Findings traceability (`S00`–`S05B`)
+## Findings traceability (`S00`–`S06`)
 
 | Finding | Status | Evidence / Where closed |
 | --- | --- | --- |
-| `SEC-01` | Partial (`S02`, `S03A`; AEAD in `S06`) | Mandatory `HELLO`/`SERVER_HELLO`/`AUTH_PROOF` handshake before any session frame or input (`SessionGuard`, `ServerSession`, `SessionGuardTest`). |
+| `SEC-01` | Closed (`S02`, `S03A`, `S06`) | Mandatory `HELLO`/`SERVER_HELLO`/`AUTH_PROOF` handshake (`HMAC-SHA256` with `HKDF-SHA256` derived key over `SHA-256(transcript)`), constant-time comparison, mandatory `SECURE_CHANNEL`, and per-IP back-off before any session frame or input (`HkdfAuthenticator`, `SessionGuard`, `SecurityCryptoTest`, `SessionGuardTest`, `ServerSessionSecurityTest`). |
+| `SEC-02` | Closed (`S06`) | All post-handshake `Phase.SESSION` traffic wrapped in `AES-256-GCM` records with 96-bit directional counter nonces, 16-byte AAD headers, strict counter monotonicity, automatic HKDF rekeying before `2^32` frames, `AndroidKeyStore`-encrypted secret files, and `SecretRedactor` log scrubbing (`AesGcmSessionCipher`, `EncryptedFileKeyStore`, `AeadFramingAndKeyStoreTest`, `ServerSessionSecurityTest`, `ClientSecurityWiringTest`, [security.md](security.md)). |
 | `SEC-03` | Closed (`S03A`) | `SessionGuard` authenticates new peers before pre-empting an active session and applies per-IP exponential back-off (`SessionGuardTest`). |
 | `SEC-04` | Evidence proven (`S05A`, `S05B`); launcher cutover in `S07`/`S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities on Android 16 (`M2101K6G`) and Android 17 HyperOS (`25019PNF3C`); documented in [spike-shell-user.md](spike-shell-user.md). |
 | `SEC-05` | Closed (`S02`, `S03A`) | Strict `KeyCodes` allow-list, pointer ID `0..31`, finite `[0, 1]` coordinates, and `PointerStateTracker` enforced in `:protocol` and `InputInjector` (`ValidatorsTest`, `ServerSessionValidationTest`). |

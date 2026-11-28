@@ -5,12 +5,15 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.protocol.SecretRedactor
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.net.Inet4Address
 import java.net.NetworkInterface
-import java.security.SecureRandom
+import java.nio.charset.StandardCharsets
+import java.security.GeneralSecurityException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -28,52 +31,62 @@ object DaemonController {
     private const val LOG_FILE = "$STATE_DIR/server.log"
     private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
     private const val PID_FILE = "$STATE_DIR/server.pid"
-    private const val SECRET_FILE = "$STATE_DIR/secret.hex"
+    private const val LEGACY_SECRET_FILE = "$STATE_DIR/secret.hex"
     private const val MAGISK_SCRIPT = "/data/adb/service.d/velocast.sh"
-    private const val SECRET_BYTES = 32
 
     data class ShellResult(val exitCode: Int, val output: String)
 
-    fun runSu(command: String, timeoutMs: Long = 5000L): ShellResult = try {
-        val proc = ProcessBuilder("su", "-c", command)
-            .redirectErrorStream(true)
-            .start()
+    fun runSu(command: String, timeoutMs: Long = 5000L, stdinLine: CharArray? = null): ShellResult =
+        try {
+            val proc = ProcessBuilder("su", "-c", command)
+                .redirectErrorStream(true)
+                .start()
 
-        val out = StringBuilder()
-        val readerThread = Thread {
-            try {
-                BufferedReader(InputStreamReader(proc.inputStream)).use { br ->
-                    var line: String?
-                    while (br.readLine().also { line = it } != null) {
-                        out.append(line).append('\n')
-                    }
+            if (stdinLine != null) {
+                OutputStreamWriter(proc.outputStream, StandardCharsets.US_ASCII).use { writer ->
+                    writer.write(stdinLine)
+                    writer.write("\n")
+                    writer.flush()
                 }
-            } catch (e: IOException) {
-                Log.w(TAG, "Error reading su stdout", e)
+            } else {
+                proc.outputStream.close()
             }
-        }
-        readerThread.start()
 
-        val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-        if (!finished) {
-            proc.destroyForcibly()
-            readerThread.join(300L)
-            ShellResult(-1, out.toString().trim().ifEmpty { "Command timed out" })
-        } else {
-            readerThread.join(500L)
-            ShellResult(proc.exitValue(), out.toString().trim())
+            val out = StringBuilder()
+            val readerThread = Thread {
+                try {
+                    BufferedReader(InputStreamReader(proc.inputStream)).use { br ->
+                        var line: String?
+                        while (br.readLine().also { line = it } != null) {
+                            out.append(line).append('\n')
+                        }
+                    }
+                } catch (e: IOException) {
+                    Log.w(TAG, "Error reading su stdout", e)
+                }
+            }
+            readerThread.start()
+
+            val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                readerThread.join(300L)
+                ShellResult(-1, out.toString().trim().ifEmpty { "Command timed out" })
+            } else {
+                readerThread.join(500L)
+                ShellResult(proc.exitValue(), out.toString().trim())
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "su execution failed", e)
+            ShellResult(-1, e.message ?: "su execution failed")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "su execution denied", e)
+            ShellResult(-1, e.message ?: "su execution denied")
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            Log.w(TAG, "su execution interrupted", e)
+            ShellResult(-1, e.message ?: "su execution interrupted")
         }
-    } catch (e: IOException) {
-        Log.w(TAG, "su execution failed", e)
-        ShellResult(-1, e.message ?: "su execution failed")
-    } catch (e: SecurityException) {
-        Log.w(TAG, "su execution denied", e)
-        ShellResult(-1, e.message ?: "su execution denied")
-    } catch (e: InterruptedException) {
-        Thread.currentThread().interrupt()
-        Log.w(TAG, "su execution interrupted", e)
-        ShellResult(-1, e.message ?: "su execution interrupted")
-    }
 
     fun checkRootAccess(): Boolean {
         val res = runSu("id", 8000L)
@@ -126,30 +139,37 @@ object DaemonController {
 
         stopDaemon(port)
 
-        val secretInitRes = DaemonScripts.ensureSecretFile()
-        if (secretInitRes.isFailure) return secretInitRes
-
-        val launchCmd = """
-            mkdir -p "$STATE_DIR"
-            chmod 700 "$STATE_DIR"
-            : > "$LOG_FILE"
-            chmod 600 "$LOG_FILE"
-            : > "$PROCESS_LOG_FILE"
-            chmod 600 "$PROCESS_LOG_FILE"
-            trap '' HUP
-            export CLASSPATH="$apkPath"
-            if command -v setsid >/dev/null 2>&1; then
-                setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
-            else
-                /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin < "$SECRET_FILE" >> "$PROCESS_LOG_FILE" 2>&1 &
-            fi
-            DAEMON_PID=${'$'}!
-            echo "${'$'}DAEMON_PID" > "$PID_FILE"
-            chmod 600 "$PID_FILE"
-            echo "STARTED:${'$'}DAEMON_PID"
-        """.trimIndent()
-
-        val res = runSu(launchCmd, 5000L)
+        val secretBytes = DaemonScripts.loadPairingSecret(context)
+            .getOrElse { return Result.failure(it) }
+        val hexChars = DaemonScripts.toHexChars(secretBytes)
+        val res = try {
+            val launchCmd = """
+                mkdir -p "$STATE_DIR"
+                chmod 700 "$STATE_DIR"
+                rm -f "$LEGACY_SECRET_FILE"
+                : > "$LOG_FILE"
+                chmod 600 "$LOG_FILE"
+                : > "$PROCESS_LOG_FILE"
+                chmod 600 "$PROCESS_LOG_FILE"
+                IFS= read -r SECRET_LINE
+                trap '' HUP
+                export CLASSPATH="$apkPath"
+                if command -v setsid >/dev/null 2>&1; then
+                    { printf '%s\n' "${'$'}SECRET_LINE"; } | setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin --auth-mode pairing >> "$PROCESS_LOG_FILE" 2>&1 &
+                else
+                    { printf '%s\n' "${'$'}SECRET_LINE"; } | /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "$STATE_DIR" --secret-from-stdin --auth-mode pairing >> "$PROCESS_LOG_FILE" 2>&1 &
+                fi
+                DAEMON_PID=${'$'}!
+                unset SECRET_LINE
+                echo "${'$'}DAEMON_PID" > "$PID_FILE"
+                chmod 600 "$PID_FILE"
+                echo "STARTED:${'$'}DAEMON_PID"
+            """.trimIndent()
+            runSu(launchCmd, timeoutMs = 5000L, stdinLine = hexChars)
+        } finally {
+            secretBytes.fill(0)
+            hexChars.fill('\u0000')
+        }
         if (res.exitCode != 0 && !res.output.contains("STARTED:")) {
             return Result.failure(IllegalStateException("Failed to launch daemon: ${res.output}"))
         }
@@ -207,17 +227,17 @@ object DaemonController {
         return res.output.contains("YES")
     }
 
-    fun setAutoStartEnabled(enabled: Boolean, port: Int): Result<Unit> {
+    fun setAutoStartEnabled(context: Context, enabled: Boolean, port: Int): Result<Unit> {
         val result: Result<Unit>
         if (!enabled) {
-            val res = runSu("rm -f \"$MAGISK_SCRIPT\"")
+            val res = runSu("rm -f \"$MAGISK_SCRIPT\" \"$LEGACY_SECRET_FILE\"")
             result = if (res.exitCode == 0) {
                 Result.success(Unit)
             } else {
                 Result.failure(IllegalStateException(res.output))
             }
         } else {
-            val secretInitRes = DaemonScripts.ensureSecretFile()
+            val secretInitRes = DaemonScripts.syncRootBootSecret(context)
             if (secretInitRes.isFailure) {
                 result = secretInitRes
             } else {
@@ -227,7 +247,7 @@ object DaemonController {
                     cat <<'EOF' > "$MAGISK_SCRIPT"
 $scriptContent
 EOF
-                    chmod 755 "$MAGISK_SCRIPT"
+                    chmod 700 "$MAGISK_SCRIPT"
                 """.trimIndent()
 
                 val res = runSu(installCmd)
@@ -252,7 +272,8 @@ EOF
             fi
         """.trimIndent()
         val res = runSu(cmd)
-        return res.output.ifBlank { "No logs yet. Tap Start Server to begin." }
+        val redacted = SecretRedactor.redact(res.output)
+        return redacted.ifBlank { "No logs yet. Tap Start Server to begin." }
     }
 
     fun clearLogs() {
@@ -328,30 +349,54 @@ private object DaemonScripts {
     private const val LOG_FILE = "$STATE_DIR/server.log"
     private const val PROCESS_LOG_FILE = "$STATE_DIR/process.log"
     private const val PID_FILE = "$STATE_DIR/server.pid"
-    private const val SECRET_FILE = "$STATE_DIR/secret.hex"
-    private const val SECRET_BYTES = 32
+    private const val BOOT_SECRET_FILE = "$STATE_DIR/pairing_secret.hex"
+    private const val BYTE_MASK = 0xFF
+    private const val HIGH_NIBBLE_SHIFT = 4
+    private const val LOW_NIBBLE_MASK = 0x0F
+    private val HEX_DIGITS = "0123456789abcdef".toCharArray()
 
-    fun ensureSecretFile(): Result<Unit> {
-        val check = DaemonController.runSu("[ -s \"$SECRET_FILE\" ] && echo OK || echo MISSING")
-        if (check.output.contains("OK")) {
-            return Result.success(Unit)
+    fun toHexChars(bytes: ByteArray): CharArray {
+        val out = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val v = bytes[i].toInt() and BYTE_MASK
+            out[i * 2] = HEX_DIGITS[v ushr HIGH_NIBBLE_SHIFT]
+            out[i * 2 + 1] = HEX_DIGITS[v and LOW_NIBBLE_MASK]
         }
-        val bytes = ByteArray(SECRET_BYTES).also { SecureRandom().nextBytes(it) }
-        val hex = bytes.joinToString("") { "%02x".format(it) }
-        bytes.fill(0)
-        val cmd = """
-            mkdir -p "$STATE_DIR"
-            chmod 700 "$STATE_DIR"
-            umask 077
-            printf '%s\n' "$hex" > "$SECRET_FILE"
-            chmod 600 "$SECRET_FILE"
-        """.trimIndent()
-        val res = DaemonController.runSu(cmd)
+        return out
+    }
+
+    fun loadPairingSecret(context: Context): Result<ByteArray> = try {
+        Result.success(HostSecretStore.getOrCreatePairingSecret(context))
+    } catch (e: GeneralSecurityException) {
+        Result.failure(IllegalStateException("Failed loading Host Keystore pairing secret", e))
+    } catch (e: IOException) {
+        Result.failure(IllegalStateException("Failed reading Host Keystore pairing secret", e))
+    }
+
+    fun syncRootBootSecret(context: Context): Result<Unit> {
+        val secretBytes = loadPairingSecret(context).getOrElse { return Result.failure(it) }
+        val hexChars = toHexChars(secretBytes)
+        val res = try {
+            val cmd = """
+                mkdir -p "$STATE_DIR"
+                chmod 700 "$STATE_DIR"
+                rm -f "$STATE_DIR/secret.hex"
+                umask 077
+                IFS= read -r SECRET_LINE
+                printf '%s\n' "${'$'}SECRET_LINE" > "$BOOT_SECRET_FILE"
+                unset SECRET_LINE
+                chmod 600 "$BOOT_SECRET_FILE"
+            """.trimIndent()
+            DaemonController.runSu(cmd, stdinLine = hexChars)
+        } finally {
+            secretBytes.fill(0)
+            hexChars.fill('\u0000')
+        }
         return if (res.exitCode == 0) {
             Result.success(Unit)
         } else {
             Result.failure(
-                IllegalStateException("Failed to initialize server secret: ${res.output}")
+                IllegalStateException("Failed to sync root boot secret: ${res.output}")
             )
         }
     }
@@ -362,7 +407,7 @@ STATE_DIR="$STATE_DIR"
 LOG_FILE="$LOG_FILE"
 PROCESS_LOG_FILE="$PROCESS_LOG_FILE"
 PID_FILE="$PID_FILE"
-SECRET_FILE="$SECRET_FILE"
+SECRET_FILE="$BOOT_SECRET_FILE"
 
 mkdir -p "${'$'}STATE_DIR"
 chmod 700 "${'$'}STATE_DIR"
@@ -375,17 +420,17 @@ done
 sleep 5
 
 APK_PATH="${'$'}(pm path $PKG_NAME | head -n 1 | cut -d: -f2 | tr -d '\r')"
-if [ -z "${'$'}APK_PATH" ] || [ ! -f "${'$'}APK_PATH" ]; then
-    echo "[${'$'}(date)] VeloCast Host APK not installed; exiting." >> "${'$'}LOG_FILE"
+if [ -z "${'$'}APK_PATH" ] || [ ! -f "${'$'}APK_PATH" ] || [ ! -s "${'$'}SECRET_FILE" ]; then
+    echo "[${'$'}(date)] VeloCast Host APK or boot secret missing; exiting." >> "${'$'}LOG_FILE"
     exit 1
 fi
 
 trap '' HUP
 export CLASSPATH="${'$'}APK_PATH"
 if command -v setsid >/dev/null 2>&1; then
-    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
+    setsid /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin --auth-mode pairing < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
 else
-    /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
+    /system/bin/app_process /system/bin $MAIN_CLASS --port $port --bind 0.0.0.0 --state-dir "${'$'}STATE_DIR" --secret-from-stdin --auth-mode pairing < "${'$'}SECRET_FILE" >> "${'$'}PROCESS_LOG_FILE" 2>&1 &
 fi
 echo "${'$'}!" > "${'$'}PID_FILE"
 chmod 600 "${'$'}PID_FILE"

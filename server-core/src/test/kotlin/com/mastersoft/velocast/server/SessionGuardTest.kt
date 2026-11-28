@@ -4,9 +4,11 @@ import com.mastersoft.velocast.protocol.ClientHandshake
 import com.mastersoft.velocast.protocol.ControlWriter
 import com.mastersoft.velocast.protocol.DeviceInfo
 import com.mastersoft.velocast.protocol.ErrorCode
+import com.mastersoft.velocast.protocol.Features
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
 import com.mastersoft.velocast.protocol.Hello
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.Pong
@@ -29,7 +31,7 @@ class SessionGuardTest {
         val acceptor = FakeServerAcceptor()
         val env = FakeSessionEnvironment(clock, logger)
         val timer = FakeHandshakeTimer()
-        val auth = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET)
+        val auth = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET)
         val backoff = PeerBackoffTracker(clock)
         val guard = SessionGuard(
             acceptor = acceptor,
@@ -75,8 +77,8 @@ class SessionGuardTest {
             val cwBad = ControlWriter(badSecretPeer.clientOut)
             val frBad = FrameReader(badSecretPeer.clientIn)
             val badClient = ClientHandshake(
-                HmacSha256Authenticator(ByteArray(32) { 0x55 }),
-                0,
+                HkdfAuthenticator(ByteArray(32) { 0x55 }),
+                Features.SECURE_CHANNEL,
                 TestClientDriver.CLIENT_NONCE
             )
             cwBad.writePayload(badClient.hello())
@@ -126,7 +128,7 @@ class SessionGuardTest {
             f.acceptor.enqueue(slowPeer)
             val cw = ControlWriter(slowPeer.clientOut)
             val fr = FrameReader(slowPeer.clientIn)
-            cw.writePayload(Hello(2, 0, TestClientDriver.CLIENT_NONCE))
+            cw.writePayload(Hello(2, Features.SECURE_CHANNEL, TestClientDriver.CLIENT_NONCE))
             slowPeer.clientOut.flush()
             val sh = FrameHeader()
             assertTrue(fr.readHeader(sh))
@@ -230,8 +232,8 @@ class SessionGuardTest {
             val cwAttacker = ControlWriter(attacker.clientOut)
             val frAttacker = FrameReader(attacker.clientIn)
             val wrongAuth = ClientHandshake(
-                HmacSha256Authenticator(ByteArray(32) { 0x99.toByte() }),
-                0,
+                HkdfAuthenticator(ByteArray(32) { 0x99.toByte() }),
+                Features.SECURE_CHANNEL,
                 TestClientDriver.CLIENT_NONCE
             )
             cwAttacker.writePayload(wrongAuth.hello())
@@ -294,9 +296,9 @@ class SessionGuardTest {
             f.acceptor.enqueue(s2Peer)
             f.acceptor.enqueue(s3Peer)
 
-            val (s2Cw, s2Fr) = sendHelloAndClientProof(s2Peer)
+            val (s2Cw, s2Fr, s2Hs) = sendHelloAndClientProof(s2Peer)
             assertTrue(s1ClosingStarted.await(5, TimeUnit.SECONDS))
-            val (s3Cw, s3Fr) = sendHelloAndClientProof(s3Peer)
+            val (s3Cw, s3Fr, s3Hs) = sendHelloAndClientProof(s3Peer)
 
             waitUntil { f.timer.entries.size >= 3 && f.timer.entries.take(3).all { it.cancelled } }
             allowS1Finish.countDown()
@@ -314,18 +316,21 @@ class SessionGuardTest {
             val winnerPeer = if (winnerIsS2) s2Peer else s3Peer
             val winnerCw = if (winnerIsS2) s2Cw else s3Cw
             val winnerFr = if (winnerIsS2) s2Fr else s3Fr
+            val winnerHs = if (winnerIsS2) s2Hs else s3Hs
             assertSame(winnerPeer, f.guard.currentActiveSession?.peerSocket)
 
-            verifyWinnerSessionResponsive(winnerCw, winnerFr, winnerPeer)
+            verifyWinnerSessionResponsive(winnerCw, winnerFr, winnerHs, winnerPeer)
         }
     }
 
-    private fun sendHelloAndClientProof(socket: FakePeerSocket): Pair<ControlWriter, FrameReader> {
+    private fun sendHelloAndClientProof(
+        socket: FakePeerSocket
+    ): Triple<ControlWriter, FrameReader, ClientHandshake> {
         val cw = ControlWriter(socket.clientOut)
         val fr = FrameReader(socket.clientIn)
         val client = ClientHandshake(
-            HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
-            0,
+            HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
+            Features.SECURE_CHANNEL,
             TestClientDriver.CLIENT_NONCE
         )
         cw.writePayload(client.hello())
@@ -338,19 +343,28 @@ class SessionGuardTest {
 
         cw.writePayload(client.onServerHello(fr.payload, 0, sh.length))
         socket.clientOut.flush()
-        return Pair(cw, fr)
+        return Triple(cw, fr, client)
     }
 
     private fun verifyWinnerSessionResponsive(
         cw: ControlWriter,
         fr: FrameReader,
+        handshake: ClientHandshake,
         peer: FakePeerSocket
     ) {
         val h = FrameHeader()
         assertTrue(fr.readHeader(h))
         assertEquals(MessageType.AUTH_PROOF, h.type)
         fr.readPayload(h)
+        handshake.onServerProof(fr.payload, 0, h.length)
 
+        val keys = checkNotNull(handshake.deriveSessionKeys())
+        try {
+            cw.cipher = keys.newClientOutboundCipher()
+            fr.cipher = keys.newClientInboundCipher()
+        } finally {
+            keys.close()
+        }
         cw.phase = Phase.SESSION
         fr.phase = Phase.SESSION
 

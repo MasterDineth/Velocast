@@ -7,8 +7,10 @@ import com.mastersoft.velocast.protocol.DeviceAction
 import com.mastersoft.velocast.protocol.DisplayGeometry
 import com.mastersoft.velocast.protocol.ErrorCode
 import com.mastersoft.velocast.protocol.ErrorMessage
+import com.mastersoft.velocast.protocol.Features
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.KeyAction
 import com.mastersoft.velocast.protocol.KeyCodes
 import com.mastersoft.velocast.protocol.MessageType
@@ -43,7 +45,7 @@ class CapabilitiesAndInjectionDeniedTest {
         val session = ServerSession(
             id = 1L,
             peerSocket = socket,
-            authenticator = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            authenticator = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             environment = env,
             clock = clock,
             logger = logger,
@@ -117,10 +119,11 @@ class CapabilitiesAndInjectionDeniedTest {
         val cw = ControlWriter(socket.clientOut)
         val fr = FrameReader(socket.clientIn)
         val client = ClientHandshake(
-            HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             ServerCapabilities.FEATURE_CLIPBOARD or
                 ServerCapabilities.FEATURE_DISPLAY_POWER or
-                ServerCapabilities.FEATURE_ROTATION_EVENTS,
+                ServerCapabilities.FEATURE_ROTATION_EVENTS or
+                Features.SECURE_CHANNEL,
             TestClientDriver.CLIENT_NONCE
         )
         cw.writePayload(client.hello())
@@ -133,6 +136,13 @@ class CapabilitiesAndInjectionDeniedTest {
         assertTrue(fr.readHeader(h))
         fr.readPayload(h)
         client.onServerProof(fr.payload, 0, h.length)
+        val keys = checkNotNull(client.deriveSessionKeys())
+        try {
+            cw.cipher = keys.newClientOutboundCipher()
+            fr.cipher = keys.newClientInboundCipher()
+        } finally {
+            keys.close()
+        }
         cw.phase = Phase.SESSION
         fr.phase = Phase.SESSION
         assertTrue(fr.readHeader(h))
@@ -151,7 +161,7 @@ class CapabilitiesAndInjectionDeniedTest {
         val session = ServerSession(
             id = 1L,
             peerSocket = socket,
-            authenticator = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            authenticator = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             environment = env,
             clock = clock,
             logger = logger,

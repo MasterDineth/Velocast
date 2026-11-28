@@ -8,6 +8,7 @@ import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Payload
 import com.mastersoft.velocast.protocol.Phase
 import com.mastersoft.velocast.protocol.ProtocolException
+import com.mastersoft.velocast.protocol.SessionCipher
 import com.mastersoft.velocast.protocol.VideoSize
 import java.io.IOException
 import java.io.OutputStream
@@ -79,12 +80,14 @@ class SessionFrameSink(
     fun activateSession(
         sessionId: Long,
         logger: Logger,
+        cipher: SessionCipher? = null,
         onFrameDropped: (() -> Unit)? = null,
         onWriteError: ((IOException) -> Unit)? = null
     ) {
         onFrameDroppedCallback = onFrameDropped
         onWriteFailureCallback = onWriteError
         synchronized(syncWriteLock) {
+            writer.cipher = cipher
             writer.phase = Phase.SESSION
         }
         queueLock.withLock {
@@ -192,6 +195,10 @@ class SessionFrameSink(
             threadToJoin.isAlive
         ) {
             threadToJoin.interrupt()
+        }
+        synchronized(syncWriteLock) {
+            writer.cipher?.close()
+            writer.cipher = null
         }
     }
 

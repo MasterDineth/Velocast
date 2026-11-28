@@ -1,14 +1,18 @@
 package com.mastersoft.velocast.server
 
+import com.mastersoft.velocast.protocol.ControlWriter
 import com.mastersoft.velocast.protocol.ErrorCode
 import com.mastersoft.velocast.protocol.FrameHeader
 import com.mastersoft.velocast.protocol.FrameReader
+import com.mastersoft.velocast.protocol.HkdfAuthenticator
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.ProtocolV2
+import com.mastersoft.velocast.protocol.SessionCipher
 import com.mastersoft.velocast.protocol.Status
 import com.mastersoft.velocast.protocol.StatusKind
 import com.mastersoft.velocast.protocol.TouchAction
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 import java.io.PrintStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -19,7 +23,7 @@ import org.junit.Test
 
 class ServerSessionValidationTest {
     private fun runSessionWithBadBytes(
-        payloadSender: (FakePeerSocket, Int) -> Unit,
+        payloadSender: (OutputStream, SessionCipher, Int) -> Unit,
         expectedCode: ErrorCode,
         sendDownFirst: Boolean = false
     ) {
@@ -32,7 +36,7 @@ class ServerSessionValidationTest {
         session = ServerSession(
             id = 1L,
             peerSocket = socket,
-            authenticator = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            authenticator = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             environment = env,
             clock = clock,
             logger = logger,
@@ -52,7 +56,7 @@ class ServerSessionValidationTest {
                 socket.clientOut.flush()
                 waitUntil { env.sink.touchCalls.size == 1 }
             }
-            payloadSender(socket, cw.nextSeq)
+            payloadSender(socket.clientOut, checkNotNull(cw.cipher), cw.nextSeq)
             socket.clientOut.flush()
 
             assertEquals(expectedCode, TestClientDriver.expectFatalError(fr))
@@ -76,8 +80,8 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsUnknownMessageType() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(rawControl(typeId = 0x7F, seq = seq))
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(out, cipher, rawControl(typeId = 0x7F, seq = seq))
             },
             expectedCode = ErrorCode.UNKNOWN_MESSAGE_TYPE
         )
@@ -86,8 +90,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsHandshakeMessageInSessionPhase() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(typeId = MessageType.HELLO.id, seq = seq, param = 26)
                 )
             },
@@ -98,8 +104,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsOutOfRangePointerId() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(
                         typeId = MessageType.TOUCH.id,
                         pointer = 32,
@@ -117,8 +125,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsInvalidCoordinates() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(
                         typeId = MessageType.TOUCH.id,
                         pointer = 0,
@@ -136,8 +146,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsDisallowedKeyCode() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(typeId = MessageType.KEY.id, pointer = 0, seq = seq, param = 5)
                 )
             },
@@ -148,8 +160,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsOutOfRangeConfigStream() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(
                         typeId = MessageType.CONFIG_STREAM.id,
                         seq = seq,
@@ -166,11 +180,9 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsInvalidUtf8TextWithNul() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                socket.clientOut.write(
-                    rawControl(typeId = MessageType.TEXT.id, seq = seq, param = 2)
-                )
-                socket.clientOut.write(byteArrayOf('a'.code.toByte(), 0x00))
+            payloadSender = { out, cipher, seq ->
+                val header = rawControl(typeId = MessageType.TEXT.id, seq = seq, param = 2)
+                sendEncryptedRaw(out, cipher, header + byteArrayOf('a'.code.toByte(), 0x00))
             },
             expectedCode = ErrorCode.INVALID_TEXT
         )
@@ -179,12 +191,15 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsBackwardsSequenceNumber() {
         runSessionWithBadBytes(
-            payloadSender = { socket, _ ->
-                // Send seq=10, then seq=5 (backwards)
-                socket.clientOut.write(
+            payloadSender = { out, cipher, _ ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(typeId = MessageType.KEYFRAME_REQ.id, seq = 10)
                 )
-                socket.clientOut.write(
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(typeId = MessageType.KEYFRAME_REQ.id, seq = 5)
                 )
             },
@@ -195,9 +210,10 @@ class ServerSessionValidationTest {
     @Test
     fun rejectsInvalidPointerStateAndCancelsActivePointers() {
         runSessionWithBadBytes(
-            payloadSender = { socket, seq ->
-                // Pointer 0 is down, send UP for unknown pointer 3
-                socket.clientOut.write(
+            payloadSender = { out, cipher, seq ->
+                sendEncryptedRaw(
+                    out,
+                    cipher,
                     rawControl(
                         typeId = MessageType.TOUCH.id,
                         pointer = 3,
@@ -223,7 +239,7 @@ class ServerSessionValidationTest {
         val session = ServerSession(
             id = 1L,
             peerSocket = socket,
-            authenticator = HmacSha256Authenticator(TestClientDriver.DEFAULT_SECRET),
+            authenticator = HkdfAuthenticator(TestClientDriver.DEFAULT_SECRET),
             environment = env,
             clock = clock,
             logger = logger,
@@ -292,4 +308,18 @@ class ServerSessionValidationTest {
             Thread.sleep(10L)
         }
     }
+}
+
+private fun sendEncryptedRaw(out: OutputStream, cipher: SessionCipher, raw: ByteArray) {
+    val aad = ByteBuffer.allocate(ProtocolV2.AEAD_HEADER_SIZE)
+        .order(ByteOrder.BIG_ENDIAN)
+        .put(1.toByte())
+        .put(0.toByte())
+        .putShort(cipher.currentEpoch.toShort())
+        .putLong(cipher.nextCounter)
+        .putInt(raw.size)
+        .array()
+    val sealed = cipher.seal(aad, raw)
+    out.write(aad)
+    out.write(sealed)
 }

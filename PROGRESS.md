@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S05B — Shell-user spike results, capability matrix & platform shim fixes (complete on `step/S05b-spike-results`, closing `SEC-04` evidence and `CQ-03` probe/shims).
+S06 — Session security: pairing secret, key derivation and AEAD (complete on `step/S06-security`, closing `SEC-01` and `SEC-02`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -46,9 +46,15 @@ S05B — Shell-user spike results, capability matrix & platform shim fixes (comp
   - Expanded `ServerCapabilities` (`input_injection`, `rotation_watcher`, `display_power`, `notification_shade`, `wake`, `clipboard`) and wired viewer-side `STATUS` parsing (`StatusKind.DISPLAY_POWER` summary + `StatusKind.DEGRADED`) into `SessionState.Streaming.serverCapabilities` and `degradedCapabilities` in `:client-core`.
   - Verified **7 / 7** `supported` capabilities in `tools/spike/results/M2101K6G-android36.json` and `tools/spike/results/25019PNF3C-android37.json` and completed full protocol-v2 streaming sessions as `uid 2000` (`LaunchMode.SHELL`, `capabilities=0x1a`) on both physical phones.
   - Wrote `docs/spike-shell-user.md` and updated `docs/architecture.md`, `docs/findings.md`, `docs/README.md`, and `tools/spike/README.md`.
+- S06 — Session security: pairing secret, key derivation and AEAD (complete on `step/S06-security`, closing `SEC-01` and `SEC-02`):
+  - Wrote `docs/security.md` covering the threat model, `SESSION_SECRET` / `PAIRING_SECRET` auth modes, `SHA-256` transcript proof, `HKDF-SHA256` key schedule, `AES-256-GCM` per-frame record framing, key rotation before `2^32` frames, Android Keystore storage, and key-lifecycle diagram.
+  - Implemented `AuthMode`, `HkdfSha256` (RFC 5869), `SessionKeySchedule`, `HkdfAuthenticator`, `SessionCipher` (`AesGcmSessionCipher`), `AeadRecordWriter` / `AeadRecordReader` integrated into `FrameIo` / `ControlIo`, `KeyStore` (`EncryptedFileKeyStore`, `JvmAesGcmEnvelopeCipher`, `InMemoryKeyStore`), and `SecretRedactor` in `:protocol`.
+  - Implemented `AndroidKeyStoreSecretStore` in `:client-core` and `HostSecretStore` in `:app-host` (`AndroidKeyStore` 256-bit `AES/GCM/NoPadding` under `noBackupFilesDir`), backup-exclusion XML rules in both apps, `FLAG_SECURE` on `HostMainActivity`, stdin secret piping in `DaemonController` (removing plaintext `secret.hex`), and `SecretRedactor` integration in `:server-core` `Logger` and `:client-core` `DiagnosticsRingBuffer`.
+  - Wired mandatory `Features.SECURE_CHANNEL` negotiation and directional `SessionCipher` activation into `ServerSession`, `SessionFrameSink`, `SessionHandshakeRunner`, `MirrorClient`, and `MirrorActivity`.
+  - Added `SecurityCryptoTest` (RFC 5869 cases 1–3, AES-256-GCM KATs, handshake & downgrade checks), `AeadFramingAndKeyStoreTest` (wrong key, replay, reorder, tampered header, truncation, nonce reuse, automatic rekeying, KeyStore tampering/alias-swap detection, redaction), `ServerSessionSecurityTest`, `LoggerTest` redaction assertions, and `ClientSecurityWiringTest`.
 
 ## Next
-- Proceed to S06 — Session security: pairing secret, key derivation and AEAD (`step/S06-security`).
+- Proceed to S07 — ADB launcher and device store (`step/S07-adb-launcher`).
 
 ## Open questions
 - None.

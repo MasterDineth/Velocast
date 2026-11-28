@@ -1,5 +1,6 @@
 package com.mastersoft.velocast.client
 
+import com.mastersoft.velocast.protocol.SecretRedactor
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,7 +44,10 @@ data class SessionMetricsSnapshot(
 )
 
 /** Fixed-capacity circular diagnostics log buffer safe for concurrent writers/readers. */
-class DiagnosticsRingBuffer(val capacity: Int = DEFAULT_CAPACITY) {
+class DiagnosticsRingBuffer(
+    val capacity: Int = DEFAULT_CAPACITY,
+    val redactor: SecretRedactor = SecretRedactor()
+) {
     init {
         require(capacity > 0) { "capacity must be positive: $capacity" }
     }
@@ -54,8 +58,9 @@ class DiagnosticsRingBuffer(val capacity: Int = DEFAULT_CAPACITY) {
     private var count = 0
 
     fun append(timestampMs: Long, category: String, message: String) {
+        val safeMessage = redactor.redact(message)
         lock.withLock {
-            entries[head] = DiagnosticsLogEntry(timestampMs, category, message)
+            entries[head] = DiagnosticsLogEntry(timestampMs, category, safeMessage)
             head = (head + 1) % capacity
             if (count < capacity) count++
         }

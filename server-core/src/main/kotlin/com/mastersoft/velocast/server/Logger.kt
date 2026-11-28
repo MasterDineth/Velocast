@@ -1,5 +1,6 @@
 package com.mastersoft.velocast.server
 
+import com.mastersoft.velocast.protocol.SecretRedactor
 import java.io.BufferedWriter
 import java.io.Closeable
 import java.io.IOException
@@ -66,6 +67,7 @@ class Logger(
     val ringCapacity: Int = DEFAULT_RING_CAPACITY,
     logFile: Path? = null,
     stderr: PrintStream? = if (logFile == null) defaultStderr() else null,
+    val redactor: SecretRedactor = SecretRedactor(),
     private val wallClockMs: () -> Long = System::currentTimeMillis
 ) : Closeable {
     private val lock = Any()
@@ -105,8 +107,8 @@ class Logger(
             timestampMs = wallClockMs(),
             level = level,
             tag = tag,
-            message = message,
-            causeSummary = cause?.stackTraceToString()?.trimEnd()
+            message = redactor.redact(message),
+            causeSummary = cause?.let { redactor.redact(it) }
         )
         val line = entry.formatLine()
         synchronized(lock) {
@@ -176,7 +178,9 @@ class Logger(
 
     private fun fallBackToStderr(message: String, cause: Throwable) {
         val fallback = activeStderr ?: defaultStderr().also { activeStderr = it }
-        fallback.println("${wallClockMs()} [WARN] [Logger] $message\n${cause.stackTraceToString()}")
+        val safeMsg = redactor.redact(message)
+        val safeCause = redactor.redact(cause)
+        fallback.println("${wallClockMs()} [WARN] [Logger] $safeMsg\n$safeCause")
         fallback.flush()
     }
 

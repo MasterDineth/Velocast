@@ -10,6 +10,7 @@ import com.mastersoft.velocast.protocol.Hello
 import com.mastersoft.velocast.protocol.KeyAction
 import com.mastersoft.velocast.protocol.MessageType
 import com.mastersoft.velocast.protocol.Phase
+import com.mastersoft.velocast.protocol.SessionCipher
 import com.mastersoft.velocast.protocol.TextInput
 import com.mastersoft.velocast.protocol.TouchAction
 import kotlinx.coroutines.CoroutineScope
@@ -186,6 +187,12 @@ sealed interface ControlCommand {
  */
 interface StreamTransport {
     suspend fun connect(endpoint: ServerEndpoint, readTimeoutMs: Long, scope: CoroutineScope)
+
+    /** Installs directional AEAD ciphers immediately before switching to [Phase.SESSION]. */
+    suspend fun installSessionCiphers(inboundCipher: SessionCipher, outboundCipher: SessionCipher) {
+        inboundCipher.close()
+        outboundCipher.close()
+    }
 
     suspend fun setPhase(phase: Phase)
 

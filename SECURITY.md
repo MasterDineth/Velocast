@@ -2,7 +2,7 @@
 
 ## Pre-Release Notice
 
-VeloCast is currently **pre-release** software and is **not safe on shared or untrusted networks**. Known security gaps (including unauthenticated/unencrypted TCP transport and root-privileged daemon execution) are tracked in [docs/findings.md](docs/findings.md) and are being addressed sequentially in [docs/steps.md](docs/steps.md).
+VeloCast is currently **pre-release** software. Session authentication (`SEC-01`) and `AES-256-GCM` transport encryption + `AndroidKeyStore` secret protection (`SEC-02`) are implemented and documented in [docs/security.md](docs/security.md); remaining launcher and release-hardening items are tracked in [docs/findings.md](docs/findings.md) and [docs/steps.md](docs/steps.md).
 
 ## Reporting a Vulnerability
 
