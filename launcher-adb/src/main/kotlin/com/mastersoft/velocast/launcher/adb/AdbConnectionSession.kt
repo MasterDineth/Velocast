@@ -5,6 +5,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit
@@ -36,6 +37,8 @@ interface AdbByteStream : Closeable {
     val inputStream: InputStream
     val outputStream: OutputStream
     val isClosed: Boolean
+
+    fun setReadTimeout(timeoutMs: Int) = Unit
 }
 
 /**
@@ -348,7 +351,15 @@ private class MultiplexedAdbStream(
     @Volatile
     private var failureCause: IOException? = null
 
+    @Volatile
+    private var readTimeoutMs: Int = 0
+
     override val isClosed: Boolean get() = streamClosed
+
+    override fun setReadTimeout(timeoutMs: Int) {
+        require(timeoutMs >= 0) { "timeoutMs must be >= 0: $timeoutMs" }
+        readTimeoutMs = timeoutMs
+    }
 
     override val inputStream: InputStream = object : InputStream() {
         private var currentChunk: ByteArray = ByteArray(0)
@@ -393,7 +404,15 @@ private class MultiplexedAdbStream(
         }
 
         private fun takeNextItem(): InboundItem = try {
-            inboundChunks.take()
+            val timeout = readTimeoutMs
+            if (timeout > 0) {
+                inboundChunks.poll(timeout.toLong(), TimeUnit.MILLISECONDS)
+                    ?: throw SocketTimeoutException(
+                        "Timed out reading ADB stream '$service' after ${timeout}ms"
+                    )
+            } else {
+                inboundChunks.take()
+            }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             throw InterruptedIOException(e.message)
