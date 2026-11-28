@@ -8,5 +8,7 @@
 - [steps.md](steps.md) - implementation steps with acceptance criteria
 - [security.md](security.md) - threat model, `SESSION_SECRET` / `PAIRING_SECRET` lifecycle, HKDF-SHA256 key schedule, AES-256-GCM record framing, Android Keystore storage, and log redaction (`S06`)
 - [spike-shell-user.md](spike-shell-user.md) - shell-user (`uid 2000`) capability matrix, failure analysis and platform shim decisions (`S05`)
+- [adb-library-decision.md](adb-library-decision.md) - evaluation of `libadb-android`, `dadb` (+ wireless-pairing forks) and the `:launcher-adb` in-house client (`S07A`)
+- [adb-pairing-test-plan.md](adb-pairing-test-plan.md) - manual real-device test plan for Wireless Debugging QR/code pairing, dynamic ports and typed errors (`S07A`)
 - [dependencies.md](dependencies.md) - dependency, version and licence record (agents keep it current)
 - ../prompts/ - one prompt file per step and prompts/templates.md
