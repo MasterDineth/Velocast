@@ -3,7 +3,7 @@
 Update this file whenever you stop. The owner will say "Continue" and you resume from here.
 
 ## Current step
-S06 — Session security: pairing secret, key derivation and AEAD (complete on `step/S06-security`, closing `SEC-01` and `SEC-02`).
+S07A — ADB library decision, wireless pairing (code & QR), mDNS discovery, TLS connect, and `FUN-13` permission gate (complete on `step/S07a-adb-pair`, closing `FUN-13` and advancing `SEC-04`).
 
 ## Done
 - S01 — Restructure, toolchain and SDK 36 (merged in PR #2).
@@ -52,13 +52,20 @@ S06 — Session security: pairing secret, key derivation and AEAD (complete on `
   - Implemented `AndroidKeyStoreSecretStore` in `:client-core` and `HostSecretStore` in `:app-host` (`AndroidKeyStore` 256-bit `AES/GCM/NoPadding` under `noBackupFilesDir`), backup-exclusion XML rules in both apps, `FLAG_SECURE` on `HostMainActivity`, stdin secret piping in `DaemonController` (removing plaintext `secret.hex`), and `SecretRedactor` integration in `:server-core` `Logger` and `:client-core` `DiagnosticsRingBuffer`.
   - Wired mandatory `Features.SECURE_CHANNEL` negotiation and directional `SessionCipher` activation into `ServerSession`, `SessionFrameSink`, `SessionHandshakeRunner`, `MirrorClient`, and `MirrorActivity`.
   - Added `SecurityCryptoTest` (RFC 5869 cases 1–3, AES-256-GCM KATs, handshake & downgrade checks), `AeadFramingAndKeyStoreTest` (wrong key, replay, reorder, tampered header, truncation, nonce reuse, automatic rekeying, KeyStore tampering/alias-swap detection, redaction), `ServerSessionSecurityTest`, `LoggerTest` redaction assertions, and `ClientSecurityWiringTest`.
+- S07A — `:launcher-adb` library decision, wireless pairing, mDNS discovery, TLS connect & `FUN-13` (complete on `step/S07a-adb-pair`):
+  - Wrote `docs/adb-library-decision.md` comparing `libadb-android`, `dadb` (+ wireless-pairing forks `Kadb`), and a minimal in-house client across pairing/TLS, USB OTG, maintenance, exact SPDX licences/obligations, size, and API support; recorded vetted Maven Central dependencies (`conscrypt-android`, `bcpkix-jdk18on`, `bcprov-jdk18on`, `curve25519-kotlin`) in `docs/dependencies.md`.
+  - Implemented `AdbClient` (`InHouseAdbClient`, `AdbClientFactory`) with Keystore-protected RSA-2048 & self-signed X.509v3 certificate persistence (`KeystoreProtectedAdbKeyStore` under `noBackupFilesDir`), `pair(host, port, code)`, `pairWithQr` (`AdbQrPayload` `WIFI:T:ADB;S:studio-...;P:...;;`), `connect` (`A_STLS` TLS 1.3 mutual-cert upgrade + legacy `A_AUTH`), `shell` (`shell,v2,raw:` + fallback), `push` (`sync:`), and `openStream`.
+  - Implemented `AdbMdnsDiscovery` and `AndroidNsdBackend` (`NsdManager` for `_adb-tls-pairing._tcp` and `_adb-tls-connect._tcp`) with timeouts, manual `host:port` fallback, and automatic port refresh when Wireless Debugging is toggled off/on.
+  - Implemented `AdbErrorMapper` (`DebuggingOff`, `DifferentNetwork`, `AuthExpired`, `NotPaired`, `WrongPairingCode`) with `SecretRedactor` scrubbing, and closed `FUN-13` via `LocalNetworkPermissionGate` (removing premature pre-API-37 `ACCESS_LOCAL_NETWORK` requests from `:app-viewer`).
+  - Added unit tests (`AdbQrPayloadAndPermissionTest`, `AdbErrorMappingTest`, `AdbDiscoveryStateMachineTest`, `AdbKeyStoreAndSpake2Test`, `AdbClientIntegrationTest`) and manual real-device test plan (`docs/adb-pairing-test-plan.md`).
 
 ## Next
-- Proceed to S07 — ADB launcher and device store (`step/S07-adb-launcher`).
+- Proceed to S07B — `AdbLauncher`, `PrepareRunner`, tunnel data channel, and encrypted `DeviceStore` (`step/S07b-adb-launch`).
 
 ## Open questions
 - None.
 
 ## Owner checks pending (needs a real phone)
+- Confirm on device (`S07A`): execute `docs/adb-pairing-test-plan.md` (`M-S07A-01` through `M-S07A-06`) against an unrooted Android 11+ / Android 16 phone to verify QR pairing, 6-digit code pairing, Wireless Debugging toggle port re-discovery, `STLS` connect + `shell`/`push`, Keystore persistence across app restarts, and typed errors.
 - Confirm on device (`S05`): run `tools/spike/run-shell-server.sh` (or `.ps1`) on physical Android 11 (API 30), Android 13 (API 33), and Android 14 (API 34, e.g. Samsung One UI) phones, plus on Xiaomi HyperOS with **USB debugging (Security settings)** toggled off to observe `Denied` / `INJECTION_DENIED`, and commit the resulting JSON files under `tools/spike/results/`.
 - On the rooted old phone, start the server through `:app-host` (`DaemonController` -> `com.mastersoft.velocast.server.Main` with `/data/adb/velocast`), connect, rotate three times, `kill -9` the server, and confirm rotation lock and display state are restored.

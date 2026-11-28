@@ -361,14 +361,14 @@ Recommendation: Add LICENSE (needed before sharing), docs/protocol.md, docs/trou
 
 ---
 
-## Findings traceability (`S00`–`S06`)
+## Findings traceability (`S00`–`S07A`)
 
 | Finding | Status | Evidence / Where closed |
 | --- | --- | --- |
 | `SEC-01` | Closed (`S02`, `S03A`, `S06`) | Mandatory `HELLO`/`SERVER_HELLO`/`AUTH_PROOF` handshake (`HMAC-SHA256` with `HKDF-SHA256` derived key over `SHA-256(transcript)`), constant-time comparison, mandatory `SECURE_CHANNEL`, and per-IP back-off before any session frame or input (`HkdfAuthenticator`, `SessionGuard`, `SecurityCryptoTest`, `SessionGuardTest`, `ServerSessionSecurityTest`). |
 | `SEC-02` | Closed (`S06`) | All post-handshake `Phase.SESSION` traffic wrapped in `AES-256-GCM` records with 96-bit directional counter nonces, 16-byte AAD headers, strict counter monotonicity, automatic HKDF rekeying before `2^32` frames, `AndroidKeyStore`-encrypted secret files, and `SecretRedactor` log scrubbing (`AesGcmSessionCipher`, `EncryptedFileKeyStore`, `AeadFramingAndKeyStoreTest`, `ServerSessionSecurityTest`, `ClientSecurityWiringTest`, [security.md](security.md)). |
 | `SEC-03` | Closed (`S03A`) | `SessionGuard` authenticates new peers before pre-empting an active session and applies per-IP exponential back-off (`SessionGuardTest`). |
-| `SEC-04` | Evidence proven (`S05A`, `S05B`); launcher cutover in `S07`/`S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities on Android 16 (`M2101K6G`) and Android 17 HyperOS (`25019PNF3C`); documented in [spike-shell-user.md](spike-shell-user.md). |
+| `SEC-04` | Evidence proven (`S05A`, `S05B`); ADB client/pairing in `S07A`, launcher cutover in `S07B`/`S09` | `:server-core` verified end-to-end as unprivileged `uid 2000` (`LaunchMode.SHELL`, `FakeContext` `com.android.shell`) across all 7 capabilities ([spike-shell-user.md](spike-shell-user.md)); `AdbClient` wireless pairing, `STLS` TLS 1.3 connect, `shell`, `push`, and `openStream` added in `:launcher-adb` (`AdbClientIntegrationTest`). |
 | `SEC-05` | Closed (`S02`, `S03A`) | Strict `KeyCodes` allow-list, pointer ID `0..31`, finite `[0, 1]` coordinates, and `PointerStateTracker` enforced in `:protocol` and `InputInjector` (`ValidatorsTest`, `ServerSessionValidationTest`). |
 | `SEC-06` | Partial (`S03A`; root launcher in `S10`) | Removed hardcoded `/data/local/tmp` state/log paths from `:server-core`; `--state-dir` is explicit (`ServerArgsAndMainTest`). |
 | `SEC-09` | Closed (`S00`) | `.gitignore` added, tracked IDE/build state removed, default LAN IP removed. |
@@ -381,6 +381,7 @@ Recommendation: Add LICENSE (needed before sharing), docs/protocol.md, docs/trou
 | `FUN-07` | Server & capability layer closed (`S03B`, `S05B`; viewer UI in `S11`) | `DisplayPowerShim` controls panel power while capture continues (including Android 14+ `DisplayControl` via `ClassLoaderFactory` + `libandroid_servers.so`), verified as `uid 2000` on Android 16 & 17. |
 | `FUN-08` | Engine closed (`S04A`, `S04B`; Compose UI in `S13`) | `PAUSE`/`RESUME` stops encoding on background and resumes with an IDR frame (`SessionEnginePauseResumeAndCancellationTest`). |
 | `FUN-09` | Engine closed (`S04A`; Compose UI in `S13`) | `SessionEngine` reconnects with exponential back-off for up to 10 minutes (`SessionEngineLivenessAndReconnectTest`). |
+| `FUN-13` | Closed (`S07A`) | Removed premature `SDK_INT >= 34` `ACCESS_LOCAL_NETWORK` runtime prompt and manifest entry while `targetSdk < 37`; centralized API 37+ policy in `:launcher-adb` `LocalNetworkPermissionGate` (`AdbQrPayloadAndPermissionTest`). |
 | `PERF-01` | Closed (`S03B`) | Bounded 3-frame latest-wins `FrameQueue`, priority control lane for `PONG`/`STATUS`/`ERROR`, `TCP_NODELAY`, and 64 KB `SO_SNDBUF` (`FrameQueueTest`, `SendPathStallAndPriorityTest`). |
 | `PERF-02` | Closed (`S04B`) | Capacity-6 `DROP_OLDEST` `VideoFrameQueue` with `< 50 ms` measured recovery after 1 s stall (`VideoDecoderInstrumentedTest`). |
 | `PERF-03` | Closed (`S03A`, `S04B`) | Zero-allocation touch arrays in `InputInjector` and `FrameBufferPool` / `ControlPacketPool` in `:client-core` (`TouchStateMachineTest`, `FrameBufferPoolAndZeroAllocTest`). |

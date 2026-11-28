@@ -1,8 +1,6 @@
 package com.mastersoft.velocast
 
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
@@ -15,6 +13,7 @@ import androidx.appcompat.widget.AppCompatButton
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.mastersoft.velocast.launcher.adb.LocalNetworkPermissionGate
 
 class ConnectActivity : AppCompatActivity() {
 
@@ -106,15 +105,9 @@ class ConnectActivity : AppCompatActivity() {
     }
 
     private fun requestLocalNetworkPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 34) {
-            val perm = "android.permission.ACCESS_LOCAL_NETWORK"
-            try {
-                if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(arrayOf(perm), 1001)
-                }
-            } catch (_: Throwable) {
-            }
-        }
+        // FUN-13: Do not request ACCESS_LOCAL_NETWORK before targeting API 37.
+        // Centralized in LocalNetworkPermissionGate for future API 37 runtime request wiring.
+        LocalNetworkPermissionGate.status(this)
     }
 
     private fun applyEdgeToEdgeInsets() {

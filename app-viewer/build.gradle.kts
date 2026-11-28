@@ -21,6 +21,13 @@ android {
         }
     }
 
+    packaging {
+        resources {
+            pickFirsts += "META-INF/LICENSE.md"
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
